@@ -74,6 +74,16 @@ addEventListener('online', () => { showOffline(); load(); });
 addEventListener('offline', showOffline);
 showOffline();
 
+// ---- Hell / Dunkel ---------------------------------------------------------------
+const theme = () => store.get('theme') || 'auto';
+function applyTheme(t) {
+  if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+  else delete document.documentElement.dataset.theme;
+  const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', bg || '#0a0f1a');
+}
+applyTheme(theme());
+
 // ---- Zustand & Navigation ----------------------------------------------------
 const S = { tab: store.get('tab') || 'today', ov: null, settings: null, stats: null };
 
@@ -160,13 +170,14 @@ function setupCard() {
 function dayView(plan, isToday) {
   const best = plan.scenarios?.[0];
   const nowMin = S.ov.nowMin;
-  let html = (isToday ? setupCard() : '') + `<p class="muted small">${fmtDate(plan.date)} · berechnet ${hm(minOfIso(plan.computedAt))} · Verkehrsdaten: ${S.ov.provider === 'tomtom' ? 'TomTom' : 'Demo-Modell (noch kein Verkehrsdienst verbunden)'}</p>`;
+  const meta = `<p class="meta">${fmtDate(plan.date)} · berechnet ${hm(minOfIso(plan.computedAt))} · ${S.ov.provider === 'tomtom' ? 'Live-Verkehr: TomTom' : 'Demo-Verkehr (TomTom noch nicht verbunden)'}</p>`;
+  let html = '';
 
   if (plan.warnings?.length) html += `<div class="card warn">${plan.warnings.map((w) => `<p>⚠️ ${esc(w)}</p>`).join('')}</div>`;
 
   if (!best) {
     html += `<div class="card"><h2>Kein Plan möglich</h2><p class="muted">Bitte Arbeitszeiten und Termine prüfen.</p></div>`;
-    return html + overrideCard(plan);
+    return html + meta + (isToday ? setupCard() : '') + overrideCard(plan);
   }
 
   // Wichtigste Aussage oben
@@ -174,20 +185,21 @@ function dayView(plan, isToday) {
   if (next) {
     const inMin = isToday ? Math.round(next.depart - nowMin) : null;
     html += `<div class="card hero">
-      <div class="muted small">${isToday ? 'Nächste Fahrt' : 'Morgen voraussichtlich'}</div>
-      <div class="big">${hm(next.depart)} losfahren</div>
-      <div class="sub">${esc(place(next.from))} → ${esc(place(next.to))} · ≈ ${dur(next.minutes)} · an ${hm(next.arrive)}${inMin != null && inMin >= 0 ? ` · in ${dur(inMin)}` : ''}</div>
+      <div class="label">${isToday ? 'Nächste Fahrt' : 'Morgen voraussichtlich'} · ${esc(place(next.from))} → ${esc(place(next.to))}</div>
+      <div class="big">${hm(next.depart)}<small>losfahren</small></div>
+      <div class="sub">≈ ${dur(next.minutes)} Fahrt · an ${hm(next.arrive)}${inMin != null && inMin >= 0 ? ` · in ${dur(inMin)}` : ''}</div>
       <div class="kpi">
-        <div><b>${dur(best.totals.commute)}</b><span>Pendelzeit ${isToday ? 'heute (rest)' : 'gesamt'}</span></div>
-        <div><b>${best.work ? `${hm(best.work.end)}` : '–'}</b><span>Feierabend</span></div>
-        <div><b>${hm(best.totals.arriveHome)}</b><span>zu Hause</span></div>
+        <div><span>Pendelzeit</span><b>${dur(best.totals.commute)}</b></div>
+        <div><span>Feierabend</span><b>${best.work ? hm(best.work.end) : '–'}</b></div>
+        <div><span>Zu Hause</span><b>${hm(best.totals.arriveHome)}</b></div>
       </div>
-      ${isToday ? '' : '<p class="small muted" style="margin:8px 0 0">Das ist eine Prognose. Morgen wird mit der echten Verkehrslage nachjustiert.</p>'}
+      ${isToday ? '' : '<p class="note">Prognose – morgen wird mit der echten Verkehrslage nachjustiert.</p>'}
     </div>`;
   } else {
-    html += `<div class="card hero"><div class="big">${isToday ? 'Heute keine Fahrten mehr' : 'Keine Fahrten'}</div>
-      <div class="sub">${isToday && plan.state?.location === 'home' ? 'Du bist zu Hause. Schönen Feierabend!' : ''}</div></div>`;
+    html += `<div class="card hero calm"><div class="label">${isToday ? 'Heute' : 'Morgen'}</div><div class="big">Keine Fahrten ${isToday ? 'mehr' : ''}</div>
+      <div class="sub">${isToday && plan.state?.location === 'home' ? 'Du bist zu Hause. Schönen Feierabend!' : 'Genieß den Tag.'}</div></div>`;
   }
+  html += meta + (isToday ? setupCard() : '');
 
   if (isToday) html += stateCard(plan, best);
 
@@ -341,12 +353,13 @@ function planView() {
   return `
   <div class="card" id="sec-work" data-section="work"><h2>Arbeitszeiten <span class="saved-hint" hidden>✓ gespeichert</span></h2>
     <p class="small muted">Stunden = reine Arbeitszeit. Die Pause wird automatisch ergänzt (z. B. 8 h → 8,5 h vor Ort). „frühestens/spätestens“ ist dein erlaubtes Zeitfenster – die App sucht darin den besten Beginn.</p>
-    <table class="work"><colgroup><col class="d"><col class="h"><col><col></colgroup><tr><th></th><th>Stunden</th><th>frühestens</th><th>spätestens</th></tr>
-    ${WDS.map((d, i) => `<tr><td><b>${d}</b></td>
-      <td><input type="number" step="0.5" min="0" max="12" data-work="${i}" data-f="hours" value="${days[i]?.hours ?? 0}"></td>
-      <td><input type="time" data-work="${i}" data-f="earliest" value="${days[i]?.earliest || '06:30'}"></td>
-      <td><input type="time" data-work="${i}" data-f="latest" value="${days[i]?.latest || '19:00'}"></td></tr>`).join('')}
-    </table>
+    <div class="week">
+      <div class="wrow whead"><span></span><span>Std.</span><span>ab</span><span>bis</span></div>
+    ${WDS.map((d, i) => `<div class="wrow"><span class="day">${d}</span>
+      <input type="number" inputmode="decimal" step="0.5" min="0" max="12" data-work="${i}" data-f="hours" value="${days[i]?.hours ?? 0}" aria-label="${WD[i]} Stunden">
+      <input type="time" data-work="${i}" data-f="earliest" value="${days[i]?.earliest || '06:30'}" aria-label="${WD[i]} frühestens">
+      <input type="time" data-work="${i}" data-f="latest" value="${days[i]?.latest || '19:00'}" aria-label="${WD[i]} spätestens"></div>`).join('')}
+    </div>
     <div class="grid2">
       <label class="field">Pause ab mehr als … Stunden<input type="number" step="0.5" id="pr-over" value="${rule[0]?.overHours ?? 6}"></label>
       <label class="field">… Minuten Pause<input type="number" id="pr-min" value="${rule[0]?.pauseMin ?? 30}"></label>
@@ -405,7 +418,7 @@ function statsView() {
   if (!st) return '<p class="muted center">Lade Statistik …</p>';
   const acc = st.accuracy || {};
   let html = `<div class="card"><h2>Was die App bisher gelernt hat</h2>
-    <div class="kpi"><div><b>${st.samples}</b><span>Messungen</span></div><div><b>${st.days}</b><span>Tage</span></div><div><b>${st.trips}</b><span>echte Fahrten</span></div></div>
+    <div class="kpi"><div><span>Messungen</span><b>${st.samples}</b></div><div><span>Tage</span><b>${st.days}</b></div><div><span>Fahrten</span><b>${st.trips}</b></div></div>
     <h3>Wie genau waren die Prognosen?</h3>
     <p class="small">Durchschnittliche Abweichung von der tatsächlichen Fahrzeit:</p>
     <ul class="reasons">
@@ -447,10 +460,15 @@ function settingsView() {
   const s = S.settings;
   const P = s.priorities, N = s.notify, PL = s.planning, TR = s.traffic;
   return `
+  <div class="card"><h2>Darstellung</h2>
+    <div class="segmented" role="radiogroup" aria-label="Darstellung">
+      ${[['auto', 'Automatisch'], ['light', 'Hell'], ['dark', 'Dunkel']].map(([v, l]) => `<button role="radio" aria-checked="${theme() === v}" class="${theme() === v ? 'on' : ''}" data-theme-set="${v}">${l}</button>`).join('')}
+    </div>
+  </div>
   <div class="card" id="sec-traffic" data-section="traffic"><h2>Verkehrsdaten <span class="saved-hint" hidden>✓ gespeichert</span></h2>
     <p class="small">Kostenlosen Schlüssel holen: <a href="https://developer.tomtom.com/user/register" target="_blank" rel="noopener">developer.tomtom.com</a> → registrieren → „Keys“ → Schlüssel kopieren und hier einfügen. Kostenlos bis 2.500 Abfragen/Tag (die App braucht ca. 300–700).</p>
     <label class="field">TomTom-Schlüssel<input id="t-key" value="${esc(TR.tomtomKey)}" autocomplete="off" autocapitalize="off" autocorrect="off" placeholder="hier einfügen"></label>
-    <label class="field">Quelle<select id="t-prov"><option value="tomtom" ${TR.provider !== 'demo' ? 'selected' : ''}>TomTom (sobald Schlüssel eingetragen)</option><option value="demo" ${TR.provider === 'demo' ? 'selected' : ''}>Demo-Modell erzwingen</option></select></label>
+    <label class="field">Quelle<select id="t-prov"><option value="tomtom" ${TR.provider !== 'demo' ? 'selected' : ''}>TomTom (empfohlen)</option><option value="demo" ${TR.provider === 'demo' ? 'selected' : ''}>Demo-Modell</option></select></label>
     <label class="field">Max. Abfragen pro Tag<input type="number" id="t-limit" value="${TR.apiDailyLimit}"></label>
     <p class="small muted">Heute verbraucht: ${S.ov.usage} Abfragen.</p>
   </div>
@@ -458,11 +476,11 @@ function settingsView() {
   <div class="card" id="sec-places" data-section="locations"><h2>Orte <span class="saved-hint" hidden>✓ gespeichert</span></h2>
     <p class="small muted">Adresse eingeben und „Suchen“ tippen. (Braucht zuerst den TomTom-Schlüssel oben.)</p>
     ${Object.entries(s.locations).map(([k, l]) => `<div class="list-item" style="display:block">
-      <div class="row"><input data-loc="${esc(k)}" data-f="label" value="${esc(l.label)}" style="width:50%">
+      <div class="row"><input class="grow" data-loc="${esc(k)}" data-f="label" value="${esc(l.label)}" aria-label="Name des Orts">
       ${['home', 'work'].includes(k) ? '' : `<button class="btn danger" data-del-loc="${esc(k)}">✕</button>`}</div>
-      <div class="row" style="margin-top:6px"><input class="grow" data-loc="${esc(k)}" data-f="address" value="${esc(l.address)}" placeholder="Straße, Ort">
+      <div class="row" style="margin-top:6px"><input class="grow" data-loc="${esc(k)}" data-f="address" value="${esc(l.address)}" placeholder="Straße, Ort" enterkeyhint="search">
       <button class="btn" data-geo="${esc(k)}">Suchen</button></div>
-      <div class="small ${l.lat != null ? 'muted' : ''}" style="margin-top:4px">${l.lat != null ? '✓ gefunden' : '⚠️ noch nicht gefunden'}</div></div>`).join('')}
+      <div class="small" style="margin-top:6px;color:${l.lat != null ? 'var(--good)' : 'var(--warn)'}">${l.lat != null ? '✓ gefunden' : 'noch nicht gefunden'}</div></div>`).join('')}
     <div class="row" style="margin-top:8px"><button class="btn" data-add-loc>+ weiteren Ort</button></div>
   </div>
 
@@ -509,7 +527,7 @@ function settingsView() {
 }
 
 function slider(key, title, val, min, max, help) {
-  return `<label class="field"><b style="color:var(--text)">${title}</b> <span class="small" id="pv-${key}">${Number(val).toFixed(2)}</span>
+  return `<label class="field"><b style="color:var(--text);font-size:15px">${title}</b> <span class="small" id="pv-${key}">${Number(val).toFixed(2)}</span>
     <input type="range" min="${min}" max="${max}" step="0.05" value="${val}" data-prio="${key}">
     <span class="small muted">${help}</span></label>`;
 }
@@ -552,6 +570,12 @@ const num = (v, lo, hi, def) => { const n = Number(v); return Number.isFinite(n)
 function wire(root) {
   wireCharts(root);
   const val = (id) => root.querySelector(`#${id}`)?.value;
+
+  root.querySelectorAll('[data-theme-set]').forEach((b) => b.onclick = () => {
+    store.set('theme', b.dataset.themeSet);
+    applyTheme(b.dataset.themeSet);
+    root.querySelectorAll('[data-theme-set]').forEach((x) => { const on = x === b; x.classList.toggle('on', on); x.setAttribute('aria-checked', on); });
+  });
 
   root.querySelectorAll('[data-goto]').forEach((b) => b.onclick = () => {
     S.tab = b.dataset.goto;
