@@ -749,6 +749,13 @@ function readLocs(root, s) {
   });
 }
 
-if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+// Updates: beim Öffnen/Zurückkehren nach neuer Version schauen und dann automatisch neu laden.
+if ('serviceWorker' in navigator && location.protocol === 'https:') {
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((reg) => {
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
+  }).catch(() => {});
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController) location.reload(); });
+}
 load();
 setInterval(() => { if (document.visibilityState === 'visible' && ['today', 'tomorrow'].includes(S.tab)) load(); }, 120000);
