@@ -2,20 +2,23 @@
 <html lang="de">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Pendelplaner</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Pendelpilot</title>
+  <meta name="apple-mobile-web-app-title" content="Pendelpilot">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="theme-color" content="#2a78d6">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
-  <link rel="apple-touch-icon" href="icon-192.png">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <header class="top">
-    <h1>Pendelplaner</h1>
+    <h1>Pendelpilot</h1>
     <button id="refresh" class="icon-btn" aria-label="Aktualisieren" title="Aktualisieren">↻</button>
   </header>
+  <div id="offline" hidden>Keine Internetverbindung – Anzeige ist evtl. nicht aktuell.</div>
   <main id="main"><p class="muted center">Lädt …</p></main>
   <nav class="tabs" id="tabs">
     <button data-tab="today" class="active"><span>●</span>Heute</button>

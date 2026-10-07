@@ -42,12 +42,18 @@ const conn = () => ({ api: store.get('api') || (store.get('token') ? DEFAULT_API
 
 async function api(path, { method = 'GET', body } = {}) {
   const { api: base, token } = conn();
-  const r = await fetch(base.replace(/\/$/, '') + path, {
-    method,
-    headers: { 'Content-Type': 'application/json', 'x-app-token': token },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  let r;
+  try {
+    r = await fetch(base.replace(/\/$/, '') + path, {
+      method,
+      headers: { 'Content-Type': 'application/json', 'x-app-token': token },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch {
+    throw new Error(navigator.onLine ? 'Server nicht erreichbar. Bitte gleich nochmal versuchen.' : 'Keine Internetverbindung.');
+  }
   const j = await r.json().catch(() => ({}));
+  if (r.status === 401) throw new Error('Der Zugangsschlüssel stimmt nicht.');
   if (!r.ok) throw new Error(j.error || `Fehler ${r.status}`);
   return j;
 }
@@ -59,6 +65,14 @@ function toast(msg) {
   clearTimeout(toast.h);
   toast.h = setTimeout(() => t.classList.remove('show'), 2600);
 }
+
+// ---- Kein Zoom, kein ungewolltes Markieren, Offline-Hinweis -------------------
+['gesturestart', 'gesturechange', 'gestureend'].forEach((ev) => document.addEventListener(ev, (e) => e.preventDefault(), { passive: false }));
+document.addEventListener('contextmenu', (e) => { if (!e.target.closest('input, textarea, [contenteditable], .selectable')) e.preventDefault(); });
+const showOffline = () => { $('#offline').hidden = navigator.onLine; };
+addEventListener('online', () => { showOffline(); load(); });
+addEventListener('offline', showOffline);
+showOffline();
 
 // ---- Zustand & Navigation ----------------------------------------------------
 const S = { tab: store.get('tab') || 'today', ov: null, settings: null, stats: null };
@@ -108,8 +122,11 @@ function renderConnect() {
     <label class="field">Zugangsschlüssel<input id="c-token" autocomplete="off"></label>
     <button class="btn primary" id="c-save">Verbinden</button></div>`;
   $('#c-save').onclick = () => {
-    store.set('api', $('#c-api').value.trim());
-    store.set('token', $('#c-token').value.trim());
+    const api = $('#c-api').value.trim(), token = $('#c-token').value.trim();
+    if (!/^https:\/\//.test(api)) return toast('Bitte die Server-Adresse prüfen');
+    if (token.length < 20) return toast('Bitte den Zugangsschlüssel einfügen');
+    store.set('api', api);
+    store.set('token', token);
     load();
   };
 }
@@ -119,10 +136,31 @@ function place(key) {
   return S.settings?.locations?.[key]?.label || { home: 'Zuhause', work: 'Arbeit', uni: 'Uni' }[key] || key;
 }
 
+function setupSteps() {
+  const s = S.settings;
+  const found = (k) => s.locations?.[k]?.lat != null;
+  return [
+    { done: !!s.traffic?.tomtomKey, text: 'TomTom-Schlüssel eintragen (echte Verkehrsdaten)', go: 'settings', anchor: 'sec-traffic' },
+    { done: found('home') && found(s.work.location), text: 'Adressen von Zuhause und Arbeit eintragen', go: 'settings', anchor: 'sec-places' },
+    { done: !!s.notify?.ntfyTopic, text: 'Benachrichtigungen einrichten (ntfy)', go: 'settings', anchor: 'sec-notify' },
+    { done: !!s.planReviewed || (s.study || []).length > 0, text: 'Arbeitszeiten und Stundenplan prüfen', go: 'plan', anchor: 'sec-work' },
+  ];
+}
+
+function setupCard() {
+  const steps = setupSteps();
+  if (steps.every((x) => x.done)) return '';
+  const n = steps.filter((x) => x.done).length;
+  return `<div class="card setup"><h2>Einrichtung (${n}/${steps.length})</h2>
+    <p class="small muted">Tippe auf einen Punkt, um ihn zu erledigen.</p>
+    <ul>${steps.map((x) => `<li class="${x.done ? 'done' : ''}"><span class="dot">${x.done ? '✓' : ''}</span>
+      <span class="txt">${x.text}</span>${x.done ? '' : `<button class="btn" data-goto="${x.go}" data-anchor="${x.anchor}">Los</button>`}</li>`).join('')}</ul></div>`;
+}
+
 function dayView(plan, isToday) {
   const best = plan.scenarios?.[0];
   const nowMin = S.ov.nowMin;
-  let html = `<p class="muted small">${fmtDate(plan.date)} · berechnet ${hm(minOfIso(plan.computedAt))} · Verkehrsdaten: ${S.ov.provider === 'tomtom' ? 'TomTom' : 'Demo-Modell (noch kein Verkehrsdienst verbunden)'}</p>`;
+  let html = (isToday ? setupCard() : '') + `<p class="muted small">${fmtDate(plan.date)} · berechnet ${hm(minOfIso(plan.computedAt))} · Verkehrsdaten: ${S.ov.provider === 'tomtom' ? 'TomTom' : 'Demo-Modell (noch kein Verkehrsdienst verbunden)'}</p>`;
 
   if (plan.warnings?.length) html += `<div class="card warn">${plan.warnings.map((w) => `<p>⚠️ ${esc(w)}</p>`).join('')}</div>`;
 
@@ -301,7 +339,7 @@ function planView() {
   const days = s.work.days;
   const rule = s.work.pauseRules || [];
   return `
-  <div class="card"><h2>Arbeitszeiten</h2>
+  <div class="card" id="sec-work" data-section="work"><h2>Arbeitszeiten <span class="saved-hint" hidden>✓ gespeichert</span></h2>
     <p class="small muted">Stunden = reine Arbeitszeit. Die Pause wird automatisch ergänzt (z. B. 8 h → 8,5 h vor Ort). „frühestens/spätestens“ ist dein erlaubtes Zeitfenster – die App sucht darin den besten Beginn.</p>
     <table class="work"><colgroup><col class="d"><col class="h"><col><col></colgroup><tr><th></th><th>Stunden</th><th>frühestens</th><th>spätestens</th></tr>
     ${WDS.map((d, i) => `<tr><td><b>${d}</b></td>
@@ -314,7 +352,7 @@ function planView() {
       <label class="field">… Minuten Pause<input type="number" id="pr-min" value="${rule[0]?.pauseMin ?? 30}"></label>
     </div>
     <label class="field">Arbeitsort<select id="work-loc">${locOptions(s.work.location)}</select></label>
-    <button class="btn primary" data-save="work">Arbeitszeiten speichern</button>
+    <p class="small muted">Änderungen werden automatisch gespeichert.</p>
   </div>
 
   <div class="card"><h2>Stundenplan (wöchentlich)</h2>
@@ -322,7 +360,7 @@ function planView() {
       <div class="small muted">${WD[e.weekday]} ${esc(e.start)}–${esc(e.end)} · ${esc(place(e.location))}${e.from || e.until ? ` · ${esc(e.from || '…')} bis ${esc(e.until || '…')}` : ''}</div></div>
       <button class="btn danger" data-del-study="${esc(e.id)}">✕</button></div>`).join('') || '<p class="muted small">Noch keine Veranstaltungen.</p>'}
     <h3>Neue Veranstaltung</h3>
-    <label class="field">Titel<input id="st-title" placeholder="z. B. Statistik"></label>
+    <label class="field">Titel<input id="st-title" maxlength="80" placeholder="z. B. Statistik"></label>
     <div class="grid2">
       <label class="field">Wochentag<select id="st-wd">${WD.map((d, i) => `<option value="${i}">${d}</option>`).join('')}</select></label>
       <label class="field">Art<select id="st-kind"><option value="mandatory">Pflicht – nie verpassen</option><option value="optional">optional – darf weichen</option></select></label>
@@ -339,7 +377,7 @@ function planView() {
       <div class="small muted">${fmtDate(e.date)} ${esc(e.start)}–${esc(e.end)} · ${esc(place(e.location))}</div></div>
       <button class="btn danger" data-del-appt="${esc(e.id)}">✕</button></div>`).join('') || '<p class="muted small">Keine Termine eingetragen.</p>'}
     <h3>Neuer Termin</h3>
-    <label class="field">Titel<input id="ap-title" placeholder="z. B. Arzt, Training, Klausur"></label>
+    <label class="field">Titel<input id="ap-title" maxlength="80" placeholder="z. B. Arzt, Training, Klausur"></label>
     <div class="grid2">
       <label class="field">Datum<input type="date" id="ap-date" value="${S.ov.tomorrow}"></label>
       <label class="field">Art<select id="ap-kind"><option value="mandatory">fest</option><option value="optional">optional</option></select></label>
@@ -409,30 +447,37 @@ function settingsView() {
   const s = S.settings;
   const P = s.priorities, N = s.notify, PL = s.planning, TR = s.traffic;
   return `
-  <div class="card"><h2>Orte</h2>
-    <p class="small muted">Adresse eingeben und „Suchen“ tippen. (Braucht den TomTom-Schlüssel unten.)</p>
+  <div class="card" id="sec-traffic" data-section="traffic"><h2>Verkehrsdaten <span class="saved-hint" hidden>✓ gespeichert</span></h2>
+    <p class="small">Kostenlosen Schlüssel holen: <a href="https://developer.tomtom.com/user/register" target="_blank" rel="noopener">developer.tomtom.com</a> → registrieren → „Keys“ → Schlüssel kopieren und hier einfügen. Kostenlos bis 2.500 Abfragen/Tag (die App braucht ca. 300–700).</p>
+    <label class="field">TomTom-Schlüssel<input id="t-key" value="${esc(TR.tomtomKey)}" autocomplete="off" autocapitalize="off" autocorrect="off" placeholder="hier einfügen"></label>
+    <label class="field">Quelle<select id="t-prov"><option value="tomtom" ${TR.provider !== 'demo' ? 'selected' : ''}>TomTom (sobald Schlüssel eingetragen)</option><option value="demo" ${TR.provider === 'demo' ? 'selected' : ''}>Demo-Modell erzwingen</option></select></label>
+    <label class="field">Max. Abfragen pro Tag<input type="number" id="t-limit" value="${TR.apiDailyLimit}"></label>
+    <p class="small muted">Heute verbraucht: ${S.ov.usage} Abfragen.</p>
+  </div>
+
+  <div class="card" id="sec-places" data-section="locations"><h2>Orte <span class="saved-hint" hidden>✓ gespeichert</span></h2>
+    <p class="small muted">Adresse eingeben und „Suchen“ tippen. (Braucht zuerst den TomTom-Schlüssel oben.)</p>
     ${Object.entries(s.locations).map(([k, l]) => `<div class="list-item" style="display:block">
       <div class="row"><input data-loc="${esc(k)}" data-f="label" value="${esc(l.label)}" style="width:50%">
       ${['home', 'work'].includes(k) ? '' : `<button class="btn danger" data-del-loc="${esc(k)}">✕</button>`}</div>
       <div class="row" style="margin-top:6px"><input class="grow" data-loc="${esc(k)}" data-f="address" value="${esc(l.address)}" placeholder="Straße, Ort">
       <button class="btn" data-geo="${esc(k)}">Suchen</button></div>
-      <div class="small ${l.lat != null ? 'muted' : ''}" style="margin-top:4px">${l.lat != null ? `✓ gefunden (${l.lat.toFixed(4)}, ${l.lon.toFixed(4)})` : '⚠️ noch nicht gefunden'}</div></div>`).join('')}
-    <div class="row" style="margin-top:8px"><button class="btn" data-add-loc>+ weiteren Ort</button><button class="btn primary" data-save="locations">Orte speichern</button></div>
+      <div class="small ${l.lat != null ? 'muted' : ''}" style="margin-top:4px">${l.lat != null ? '✓ gefunden' : '⚠️ noch nicht gefunden'}</div></div>`).join('')}
+    <div class="row" style="margin-top:8px"><button class="btn" data-add-loc>+ weiteren Ort</button></div>
   </div>
 
-  <div class="card"><h2>Was ist dir wichtig?</h2>
+  <div class="card" data-section="priorities"><h2>Was ist dir wichtig? <span class="saved-hint" hidden>✓ gespeichert</span></h2>
     <p class="small muted">Pflichttermine und deine Arbeitszeit werden immer eingehalten. Die Regler bestimmen, wie die App den Rest abwägt.</p>
     ${slider('commute', 'Möglichst wenig im Auto sitzen', P.commute, 0, 2, 'Wie schlimm ist 1 Minute Fahrt?')}
     ${slider('away', 'Viel Freizeit zu Hause', P.away, 0, 1.5, 'Wie schlimm ist 1 Minute länger unterwegs (statt zu Hause)?')}
     ${slider('optionalMissed', 'Optionale Veranstaltungen besuchen', P.optionalMissed, 0, 3, 'Wie schlimm ist 1 verpasste Minute einer optionalen Veranstaltung?')}
-    <button class="btn primary" data-save="priorities">Speichern</button>
   </div>
 
-  <div class="card"><h2>Benachrichtigungen</h2>
+  <div class="card" id="sec-notify" data-section="notify"><h2>Benachrichtigungen <span class="saved-hint" hidden>✓ gespeichert</span></h2>
     <p class="small">1. App <b>ntfy</b> installieren (<a href="https://apps.apple.com/app/ntfy/id1625396347" target="_blank" rel="noopener">iPhone</a> · <a href="https://play.google.com/store/apps/details?id=io.heckel.ntfy" target="_blank" rel="noopener">Android</a>)<br>
     2. Dort „+“ tippen und dieses Thema abonnieren:</p>
-    <div class="row"><input class="grow" id="n-topic" value="${esc(N.ntfyTopic)}" placeholder="pendel-…"><button class="btn" id="n-gen">Neu erzeugen</button></div>
-    <div class="row" style="margin-top:8px"><button class="btn" id="n-test">Test senden</button></div>
+    <div class="row"><input class="grow" id="n-topic" value="${esc(N.ntfyTopic)}" placeholder="erst „Neu erzeugen“ tippen" autocapitalize="off" autocorrect="off"><button class="btn" id="n-gen">Neu erzeugen</button></div>
+    <div class="row" style="margin-top:8px"><button class="btn" id="n-copy">Kopieren</button><button class="btn" id="n-test">Test senden</button></div>
     <div class="grid2">
       <label class="field">Abend-Prognose um<input type="time" id="n-evening" value="${esc(N.eveningTime)}"></label>
       <label class="field">Losfahr-Hinweis (min vorher)<input type="number" id="n-lead" value="${N.leadMin}"></label>
@@ -441,19 +486,9 @@ function settingsView() {
       <label class="field">Ruhe ab<input type="time" id="n-qs" value="${esc(N.quietStart)}"></label>
       <label class="field">Ruhe bis<input type="time" id="n-qe" value="${esc(N.quietEnd)}"></label>
     </div>
-    <button class="btn primary" data-save="notify">Speichern</button>
   </div>
 
-  <div class="card"><h2>Verkehrsdaten</h2>
-    <p class="small">Kostenlosen Schlüssel holen: <a href="https://developer.tomtom.com/user/register" target="_blank" rel="noopener">developer.tomtom.com</a> → registrieren → „Keys“ → Schlüssel kopieren und hier einfügen. Kostenlos bis 2.500 Abfragen/Tag (die App braucht ca. 300–700).</p>
-    <label class="field">TomTom-Schlüssel<input id="t-key" value="${esc(TR.tomtomKey)}" autocomplete="off"></label>
-    <label class="field">Quelle<select id="t-prov"><option value="tomtom" ${TR.provider !== 'demo' ? 'selected' : ''}>TomTom (sobald Schlüssel eingetragen)</option><option value="demo" ${TR.provider === 'demo' ? 'selected' : ''}>Demo-Modell erzwingen</option></select></label>
-    <label class="field">Max. Abfragen pro Tag<input type="number" id="t-limit" value="${TR.apiDailyLimit}"></label>
-    <p class="small muted">Heute verbraucht: ${S.ov.usage} Abfragen.</p>
-    <button class="btn primary" data-save="traffic">Speichern</button>
-  </div>
-
-  <div class="card"><h2>Feintuning</h2>
+  <div class="card" data-section="planning"><h2>Feintuning <span class="saved-hint" hidden>✓ gespeichert</span></h2>
     <div class="grid2">
       <label class="field">Puffer vor Terminen (min)<input type="number" id="p-buffer" value="${PL.bufferMin}"></label>
       <label class="field">Max. warten nach Feierabend (min)<input type="number" id="p-wait" value="${PL.maxWaitAfterMin}"></label>
@@ -461,7 +496,12 @@ function settingsView() {
       <label class="field">Raster (min)<input type="number" id="p-step" value="${PL.stepMin}"></label>
     </div>
     <label class="field">Link zu dieser App (für Klick auf Benachrichtigung)<input id="p-url" value="${esc(s.appUrl || location.origin + location.pathname)}"></label>
-    <button class="btn primary" data-save="planning">Speichern</button>
+  </div>
+
+  <div class="card"><h2>Sicherung</h2>
+    <p class="small muted">Alle Einstellungen, Arbeitszeiten, Stundenplan und Termine als Datei sichern – oder aus einer Sicherung wiederherstellen.</p>
+    <div class="row"><button class="btn" id="b-export">Sicherung speichern</button><button class="btn" id="b-import">Wiederherstellen</button></div>
+    <input type="file" id="b-file" accept="application/json,.json" hidden>
   </div>
 
   <div class="card"><h2>Verbindung</h2><p class="small muted">${esc(conn().api)}</p>
@@ -475,107 +515,229 @@ function slider(key, title, val, min, max, help) {
 }
 
 // ---- Aktionen --------------------------------------------------------------------
-async function saveSettings(mut, msg = 'Gespeichert') {
-  const s = structuredClone(S.settings);
-  mut(s);
-  try {
-    S.settings = await api('/settings', { method: 'PUT', body: s });
-    S.ov = await api('/overview');
-    render();
-    toast(msg);
-  } catch (e) { toast(e.message); }
+// Speichert Einstellungen in der Datenbank. Alle Speichervorgänge laufen nacheinander
+// (Warteschlange), damit schnelle Änderungen nie verloren gehen. rerender=false beim
+// Auto-Speichern, damit der Fokus im nächsten Eingabefeld bleibt. button = gegen Doppeltippen.
+let chain = Promise.resolve();
+function saveSettings(mut, msg = 'Gespeichert', { rerender = true, section = null, button = null } = {}) {
+  if (button) { if (button.disabled) return Promise.resolve(false); button.disabled = true; }
+  const run = async () => {
+    const s = structuredClone(S.settings);
+    if (mut(s) === false) { if (button) button.disabled = false; return false; }
+    try {
+      S.settings = await api('/settings', { method: 'PUT', body: s });
+      S.ov = await api('/overview');
+      if (rerender) render();
+      else {
+        const hint = section && document.querySelector(`[data-section="${section}"] .saved-hint`);
+        if (hint) { hint.hidden = false; clearTimeout(hint.t); hint.t = setTimeout(() => { hint.hidden = true; }, 1800); }
+      }
+      if (msg) toast(msg);
+      return true;
+    } catch (e) {
+      toast(`Nicht gespeichert: ${e.message}`);
+      return false;
+    } finally {
+      if (button && !rerender) button.disabled = false;
+      if (button && rerender && button.isConnected) button.disabled = false;
+    }
+  };
+  const p = chain.then(run, run);
+  chain = p.catch(() => {});
+  return p;
 }
+
+const num = (v, lo, hi, def) => { const n = Number(v); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : def; };
 
 function wire(root) {
   wireCharts(root);
   const val = (id) => root.querySelector(`#${id}`)?.value;
 
+  root.querySelectorAll('[data-goto]').forEach((b) => b.onclick = () => {
+    S.tab = b.dataset.goto;
+    store.set('tab', S.tab);
+    render();
+    if (b.dataset.goto === 'plan' && !S.settings.planReviewed) saveSettings((s) => { s.planReviewed = true; }, '', { rerender: false });
+    const el = document.getElementById(b.dataset.anchor);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+
   root.querySelectorAll('[data-act]').forEach((b) => b.onclick = async () => {
+    if (b.dataset.act === 'reset' && !confirm('Status für heute zurücksetzen?')) return;
+    if (b.disabled) return;
+    b.disabled = true;
+    await chain;
     try {
       await api('/state', { method: 'POST', body: { action: b.dataset.act } });
       S.ov = await api('/overview');
       render();
       toast({ departed: 'Gute Fahrt!', arrived: 'Ankunft gespeichert', reset: 'Zurückgesetzt' }[b.dataset.act]);
-    } catch (e) { toast(e.message); }
+    } catch (e) { toast(e.message); b.disabled = false; }
   });
 
   root.querySelectorAll('[data-override]').forEach((b) => b.onclick = () => {
+    if (b.disabled) return;
     const d = b.dataset.override;
-    const hours = Number(val('ov-hours'));
+    const hours = num(val('ov-hours'), 0, 14, 0);
+    if (hours > 0 && (!val('ov-earliest') || !val('ov-latest') || val('ov-latest') <= val('ov-earliest'))) return toast('„spätestens“ muss nach „frühestens“ liegen');
     saveSettings((s) => {
       s.overrides ||= {};
       s.overrides[d] = { ...(s.overrides[d] || {}), work: hours > 0 ? { hours, earliest: val('ov-earliest'), latest: val('ov-latest') } : null };
-    }, 'Ausnahme gespeichert');
+    }, 'Ausnahme gespeichert', { button: b });
   });
-  root.querySelectorAll('[data-override-clear]').forEach((b) => b.onclick = () => saveSettings((s) => { delete s.overrides[b.dataset.overrideClear]; }, 'Entfernt'));
+  root.querySelectorAll('[data-override-clear]').forEach((b) => b.onclick = () => {
+    if (!confirm(`Ausnahme für ${fmtDate(b.dataset.overrideClear)} entfernen? Dann gilt wieder die normale Arbeitszeit.`)) return;
+    saveSettings((s) => { delete s.overrides[b.dataset.overrideClear]; }, 'Entfernt');
+  });
 
-  root.querySelectorAll('[data-save]').forEach((b) => b.onclick = () => {
-    const what = b.dataset.save;
-    if (what === 'work') {
-      saveSettings((s) => {
-        root.querySelectorAll('[data-work]').forEach((i) => {
-          const d = i.dataset.work;
-          s.work.days[d] ||= {};
-          s.work.days[d][i.dataset.f] = i.dataset.f === 'hours' ? Number(i.value) : i.value;
-        });
-        const over = Number(val('pr-over')), pm = Number(val('pr-min'));
-        s.work.pauseRules = [{ overHours: over, pauseMin: pm }, ...(s.work.pauseRules || []).slice(1)];
-        s.work.location = val('work-loc');
-      });
-    } else if (what === 'locations') {
-      saveSettings((s) => readLocs(root, s));
-    } else if (what === 'priorities') {
-      saveSettings((s) => root.querySelectorAll('[data-prio]').forEach((i) => { s.priorities[i.dataset.prio] = Number(i.value); }));
-    } else if (what === 'notify') {
-      saveSettings((s) => Object.assign(s.notify, {
-        ntfyTopic: val('n-topic').trim(), eveningTime: val('n-evening'), leadMin: Number(val('n-lead')),
-        changeThresholdMin: Number(val('n-thr')), quietStart: val('n-qs'), quietEnd: val('n-qe'),
-      }));
-    } else if (what === 'traffic') {
-      saveSettings((s) => Object.assign(s.traffic, { tomtomKey: val('t-key').trim(), provider: val('t-prov'), apiDailyLimit: Number(val('t-limit')) }));
-    } else if (what === 'planning') {
-      saveSettings((s) => {
-        Object.assign(s.planning, { bufferMin: Number(val('p-buffer')), maxWaitAfterMin: Number(val('p-wait')), baseTravelMin: Number(val('p-base')), stepMin: Math.max(5, Number(val('p-step'))) });
-        s.appUrl = val('p-url');
-      });
-    }
+  const savers = {
+    work: (s) => {
+      for (const i of root.querySelectorAll('[data-work]')) {
+        const d = i.dataset.work;
+        s.work.days[d] ||= {};
+        s.work.days[d][i.dataset.f] = i.dataset.f === 'hours' ? num(i.value, 0, 14, 0) : i.value;
+      }
+      for (const [d, w] of Object.entries(s.work.days)) {
+        if (w.hours > 0 && (!w.earliest || !w.latest || w.latest <= w.earliest)) { toast(`${WD[d]}: „spätestens“ muss nach „frühestens“ liegen`); return false; }
+      }
+      s.work.pauseRules = [{ overHours: num(val('pr-over'), 0, 14, 6), pauseMin: num(val('pr-min'), 0, 120, 30) }, ...(s.work.pauseRules || []).slice(1)];
+      s.work.location = val('work-loc');
+      s.planReviewed = true;
+    },
+    locations: (s) => {
+      for (const i of root.querySelectorAll('[data-loc][data-f="label"]')) {
+        if (!i.value.trim()) { toast('Ein Ort braucht einen Namen'); return false; }
+        if (s.locations[i.dataset.loc]) s.locations[i.dataset.loc].label = i.value.trim();
+      }
+    },
+    priorities: (s) => root.querySelectorAll('[data-prio]').forEach((i) => { s.priorities[i.dataset.prio] = Number(i.value); }),
+    notify: (s) => Object.assign(s.notify, {
+      ntfyTopic: val('n-topic').trim(), eveningTime: val('n-evening') || '20:00', leadMin: num(val('n-lead'), 0, 120, 15),
+      changeThresholdMin: num(val('n-thr'), 1, 60, 5), quietStart: val('n-qs'), quietEnd: val('n-qe'),
+    }),
+    traffic: (s) => Object.assign(s.traffic, { tomtomKey: val('t-key').trim(), provider: val('t-prov'), apiDailyLimit: num(val('t-limit'), 50, 2500, 2000) }),
+    planning: (s) => {
+      Object.assign(s.planning, { bufferMin: num(val('p-buffer'), 0, 60, 5), maxWaitAfterMin: num(val('p-wait'), 0, 300, 120), baseTravelMin: num(val('p-base'), 5, 240, 35), stepMin: num(val('p-step'), 5, 30, 5) });
+      s.appUrl = val('p-url');
+    },
+  };
+  root.querySelectorAll('[data-section]').forEach((sec) => {
+    const save = savers[sec.dataset.section];
+    if (!save) return;
+    sec.addEventListener('change', (e) => {
+      if (e.target.matches('[data-f="address"], input[type="file"]')) return;
+      const isKey = e.target.id === 't-key';
+      saveSettings(save, isKey ? 'TomTom-Schlüssel gespeichert ✓' : '', { rerender: isKey, section: sec.dataset.section });
+    });
   });
 
   root.querySelectorAll('[data-prio]').forEach((i) => i.oninput = () => { root.querySelector(`#pv-${i.dataset.prio}`).textContent = Number(i.value).toFixed(2); });
 
-  root.querySelectorAll('[data-geo]').forEach((b) => b.onclick = async () => {
-    const k = b.dataset.geo;
-    const q = root.querySelector(`[data-loc="${k}"][data-f="address"]`).value;
+  const geocode = async (k) => {
+    const q = root.querySelector(`[data-loc="${k}"][data-f="address"]`).value.trim();
+    if (!q) return toast('Bitte erst eine Adresse eingeben');
+    if (!S.settings.traffic.tomtomKey) return toast('Erst oben den TomTom-Schlüssel eintragen');
     try {
       const hit = await api(`/geocode?q=${encodeURIComponent(q)}`);
       if (!hit) return toast('Adresse nicht gefunden');
       saveSettings((s) => { readLocs(root, s); Object.assign(s.locations[k], { address: hit.address, lat: hit.lat, lon: hit.lon }); }, `Gefunden: ${hit.address}`);
     } catch (e) { toast(e.message); }
-  });
+  };
+  root.querySelectorAll('[data-geo]').forEach((b) => b.onclick = () => geocode(b.dataset.geo));
+  root.querySelectorAll('[data-f="address"]').forEach((i) => i.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); i.blur(); geocode(i.dataset.loc); } }));
   root.querySelector('[data-add-loc]')?.addEventListener('click', () => saveSettings((s) => { readLocs(root, s); s.locations[`ort_${uid()}`] = { label: 'Neuer Ort', address: '', lat: null, lon: null }; }, 'Ort hinzugefügt'));
-  root.querySelectorAll('[data-del-loc]').forEach((b) => b.onclick = () => saveSettings((s) => { delete s.locations[b.dataset.delLoc]; }, 'Ort entfernt'));
-
-  root.querySelector('[data-add="study"]')?.addEventListener('click', () => {
-    if (!val('st-title')) return toast('Bitte Titel eingeben');
-    saveSettings((s) => { s.study = [...(s.study || []), { id: uid(), title: val('st-title'), weekday: Number(val('st-wd')), start: val('st-start'), end: val('st-end'), location: val('st-loc'), kind: val('st-kind'), until: val('st-until') || null }]; }, 'Veranstaltung hinzugefügt');
+  root.querySelectorAll('[data-del-loc]').forEach((b) => b.onclick = () => {
+    const k = b.dataset.delLoc;
+    const used = (S.settings.study || []).some((e) => e.location === k) || (S.settings.appointments || []).some((e) => e.location === k);
+    if (!confirm(`Ort „${place(k)}“ wirklich löschen?${used ? '\n\nAchtung: Veranstaltungen/Termine nutzen diesen Ort noch.' : ''}`)) return;
+    saveSettings((s) => { delete s.locations[k]; }, 'Ort entfernt');
   });
-  root.querySelector('[data-add="appt"]')?.addEventListener('click', () => {
-    if (!val('ap-title')) return toast('Bitte Titel eingeben');
-    saveSettings((s) => { s.appointments = [...(s.appointments || []), { id: uid(), title: val('ap-title'), date: val('ap-date'), start: val('ap-start'), end: val('ap-end'), location: val('ap-loc'), kind: val('ap-kind'), category: val('ap-cat') }]; }, 'Termin hinzugefügt');
-  });
-  root.querySelectorAll('[data-del-study]').forEach((b) => b.onclick = () => saveSettings((s) => { s.study = s.study.filter((e) => e.id !== b.dataset.delStudy); }, 'Entfernt'));
-  root.querySelectorAll('[data-del-appt]').forEach((b) => b.onclick = () => saveSettings((s) => { s.appointments = s.appointments.filter((e) => e.id !== b.dataset.delAppt); }, 'Entfernt'));
 
-  root.querySelector('#n-gen')?.addEventListener('click', () => { root.querySelector('#n-topic').value = `pendel-${uid()}${uid()}`; });
+  const checkTimes = (a, b) => {
+    if (!a || !b) { toast('Bitte „von“ und „bis“ ausfüllen'); return false; }
+    if (b <= a) { toast('„bis“ muss nach „von“ liegen'); return false; }
+    return true;
+  };
+  root.querySelector('[data-add="study"]')?.addEventListener('click', (ev) => {
+    if (!val('st-title').trim()) return toast('Bitte einen Titel eingeben');
+    if (!checkTimes(val('st-start'), val('st-end'))) return;
+    saveSettings((s) => { s.study = [...(s.study || []), { id: uid(), title: val('st-title').trim(), weekday: Number(val('st-wd')), start: val('st-start'), end: val('st-end'), location: val('st-loc'), kind: val('st-kind'), until: val('st-until') || null }]; }, 'Veranstaltung hinzugefügt', { button: ev.currentTarget });
+  });
+  root.querySelector('[data-add="appt"]')?.addEventListener('click', (ev) => {
+    if (!val('ap-title').trim()) return toast('Bitte einen Titel eingeben');
+    if (!val('ap-date')) return toast('Bitte ein Datum wählen');
+    if (!checkTimes(val('ap-start'), val('ap-end'))) return;
+    saveSettings((s) => { s.appointments = [...(s.appointments || []), { id: uid(), title: val('ap-title').trim(), date: val('ap-date'), start: val('ap-start'), end: val('ap-end'), location: val('ap-loc'), kind: val('ap-kind'), category: val('ap-cat') }]; }, 'Termin hinzugefügt', { button: ev.currentTarget });
+  });
+  root.querySelectorAll('[data-del-study]').forEach((b) => b.onclick = () => {
+    const e = S.settings.study.find((x) => x.id === b.dataset.delStudy);
+    if (!confirm(`„${e?.title}“ aus dem Stundenplan löschen?`)) return;
+    saveSettings((s) => { s.study = s.study.filter((x) => x.id !== b.dataset.delStudy); }, 'Gelöscht');
+  });
+  root.querySelectorAll('[data-del-appt]').forEach((b) => b.onclick = () => {
+    const e = S.settings.appointments.find((x) => x.id === b.dataset.delAppt);
+    if (!confirm(`Termin „${e?.title}“ löschen?`)) return;
+    saveSettings((s) => { s.appointments = s.appointments.filter((x) => x.id !== b.dataset.delAppt); }, 'Gelöscht');
+  });
+
+  root.querySelector('#n-gen')?.addEventListener('click', () => {
+    if (S.settings.notify.ntfyTopic && !confirm('Neues Thema erzeugen? Danach musst du es in ntfy neu abonnieren.')) return;
+    const topic = `pendel-${uid()}${uid()}`;
+    root.querySelector('#n-topic').value = topic;
+    saveSettings((s) => { s.notify.ntfyTopic = topic; }, 'Thema erzeugt – jetzt „Kopieren“ tippen', { rerender: false, section: 'notify' });
+  });
+  root.querySelector('#n-copy')?.addEventListener('click', async () => {
+    const t = val('n-topic').trim();
+    if (!t) return toast('Erst „Neu erzeugen“ tippen');
+    try { await navigator.clipboard.writeText(t); toast('Kopiert – jetzt in ntfy einfügen'); } catch { root.querySelector('#n-topic').select(); toast('Bitte lange drücken und kopieren'); }
+  });
   root.querySelector('#n-test')?.addEventListener('click', async () => {
     try {
       const topic = val('n-topic').trim();
-      if (topic !== S.settings.notify.ntfyTopic) await saveSettings((s) => { s.notify.ntfyTopic = topic; });
+      if (!topic) return toast('Erst „Neu erzeugen“ tippen');
+      if (topic !== S.settings.notify.ntfyTopic) await saveSettings((s) => { s.notify.ntfyTopic = topic; }, '', { rerender: false });
       await api('/test-notification', { method: 'POST' });
       toast('Test gesendet – kam er an?');
     } catch (e) { toast(e.message); }
   });
-  root.querySelector('#logout')?.addEventListener('click', () => { store.del('api'); store.del('token'); renderConnect(); });
+  root.querySelector('#logout')?.addEventListener('click', () => {
+    if (!confirm('Von diesem Gerät abmelden? Deine Daten bleiben erhalten, du brauchst danach aber den Zugangsschlüssel erneut.')) return;
+    store.del('api'); store.del('token'); renderConnect();
+  });
+
+  // Sicherung
+  root.querySelector('#b-export')?.addEventListener('click', () => {
+    const blob = new Blob([JSON.stringify({ app: 'pendelpilot', version: 1, savedAt: new Date().toISOString(), settings: S.settings }, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `pendelpilot-sicherung-${S.ov.today}.json`;
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  });
+  root.querySelector('#b-import')?.addEventListener('click', () => root.querySelector('#b-file').click());
+  root.querySelector('#b-file')?.addEventListener('change', async (e) => {
+    const f = e.target.files?.[0];
+    e.target.value = '';
+    if (!f) return;
+    let data;
+    try { data = JSON.parse(await f.text()); } catch { return toast('Die Datei ist keine gültige Sicherung'); }
+    const imp = data?.settings ?? data;
+    if (!imp || typeof imp !== 'object' || Array.isArray(imp) || !(imp.locations || imp.work || imp.study)) return toast('Die Datei ist keine Pendelpilot-Sicherung');
+    if (!confirm('Sicherung wiederherstellen? Deine aktuellen Einstellungen, Stundenplan und Termine werden ersetzt.')) return;
+    saveSettings((s) => {
+      // Nur bekannte Bereiche übernehmen; kaputte Listen verwerfen. Der Server ergänzt fehlende Felder.
+      const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : undefined);
+      const list = (v) => (Array.isArray(v) ? v.filter((x) => x && typeof x === 'object' && x.id && x.start && x.end) : []);
+      Object.keys(s).forEach((k) => delete s[k]);
+      Object.assign(s, {
+        locations: obj(imp.locations), work: obj(imp.work), priorities: obj(imp.priorities), planning: obj(imp.planning),
+        notify: obj(imp.notify), traffic: obj(imp.traffic), overrides: obj(imp.overrides) || {},
+        study: list(imp.study), appointments: list(imp.appointments).filter((x) => x.date),
+        appUrl: typeof imp.appUrl === 'string' ? imp.appUrl : undefined, planReviewed: true,
+      });
+      Object.keys(s).forEach((k) => s[k] === undefined && delete s[k]);
+    }, 'Sicherung wiederhergestellt');
+  });
 }
 
 function readLocs(root, s) {

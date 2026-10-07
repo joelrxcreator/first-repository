@@ -1,4 +1,4 @@
-# Pendelplaner
+# Pendelpilot
 
 Persönlicher Pendel- und Tagesplaner. Die App betrachtet **Hinweg, Rückweg, Arbeitszeit, Studium,
 Termine, gelernte Verkehrsmuster und die aktuelle Verkehrslage gemeinsam** und empfiehlt, wann du
