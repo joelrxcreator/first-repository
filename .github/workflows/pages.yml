@@ -1,7 +1,7 @@
 name: App veröffentlichen (GitHub Pages)
 on:
   push:
-    branches: [main]
+    branches: [main, claude/practical-wright-75qgnu]
     paths: ['web/**', '.github/workflows/pages.yml']
   workflow_dispatch:
 permissions:

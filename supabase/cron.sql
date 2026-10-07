@@ -13,7 +13,8 @@ select cron.schedule('pendel-tick', '*/5 * * * *', $$
   );
 $$);
 
--- Alte Prognose-Abfragen und Pläne nach 45 Tagen löschen (echte Messungen bleiben).
+-- Optional: alte Prognose-Abfragen und Pläne aufräumen (echte Messungen bleiben).
+-- Nicht zwingend nötig – die Datenmenge bleibt auch über Jahre klein.
 select cron.schedule('pendel-cleanup', '17 3 * * *', $$
   delete from public.observations where source = 'forecast' and depart_at < now() - interval '45 days';
   delete from public.plans where date < current_date - 14;
