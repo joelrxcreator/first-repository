@@ -36,7 +36,9 @@ const store = {
     history.replaceState(null, '', location.pathname + location.search);
   }
 })();
-const conn = () => ({ api: store.get('api'), token: store.get('token') });
+// Öffentliche Adresse des eigenen Backends (kein Geheimnis); der Schlüssel bleibt geheim.
+const DEFAULT_API = 'https://ntkooxdivapuznjufdwj.supabase.co/functions/v1/pendel';
+const conn = () => ({ api: store.get('api') || (store.get('token') ? DEFAULT_API : null), token: store.get('token') });
 
 async function api(path, { method = 'GET', body } = {}) {
   const { api: base, token } = conn();
@@ -101,8 +103,8 @@ function render() {
 // ---- Verbindungs-Bildschirm ----------------------------------------------------
 function renderConnect() {
   $('#main').innerHTML = `<div class="card"><h2>Willkommen 👋</h2>
-    <p>Öffne am besten einfach den Einrichtungslink, den du bekommen hast. Alternativ hier eintragen:</p>
-    <label class="field">Server-Adresse<input id="c-api" placeholder="https://….supabase.co/functions/v1/pendel"></label>
+    <p>Nur noch den Zugangsschlüssel einfügen und auf „Verbinden“ tippen.</p>
+    <label class="field">Server-Adresse (schon ausgefüllt)<input id="c-api" value="${DEFAULT_API}"></label>
     <label class="field">Zugangsschlüssel<input id="c-token" autocomplete="off"></label>
     <button class="btn primary" id="c-save">Verbinden</button></div>`;
   $('#c-save').onclick = () => {
