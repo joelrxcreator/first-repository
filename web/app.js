@@ -480,7 +480,7 @@ function settingsView() {
       ${['home', 'work'].includes(k) ? '' : `<button class="btn danger" data-del-loc="${esc(k)}">✕</button>`}</div>
       <div class="row" style="margin-top:6px"><input class="grow" data-loc="${esc(k)}" data-f="address" value="${esc(l.address)}" placeholder="Straße, Ort" enterkeyhint="search">
       <button class="btn" data-geo="${esc(k)}">Suchen</button></div>
-      <div class="small" style="margin-top:6px;color:${l.lat != null ? 'var(--good)' : 'var(--warn)'}">${l.lat != null ? '✓ gefunden' : 'noch nicht gefunden'}</div></div>`).join('')}
+      <div class="small" style="margin-top:8px"><span style="color:${l.lat != null ? 'var(--good)' : 'var(--warn)'}">${l.lat != null ? '✓ gefunden' : 'noch nicht gefunden'}</span>${l.lat != null ? `<a class="map-link" href="https://www.google.com/maps/search/?api=1&query=${l.lat},${l.lon}" target="_blank" rel="noopener">In Google Maps prüfen ↗</a>` : ''}</div></div>`).join('')}
     <div class="row" style="margin-top:8px"><button class="btn" data-add-loc>+ weiteren Ort</button></div>
   </div>
 

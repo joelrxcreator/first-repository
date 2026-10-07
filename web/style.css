@@ -1,4 +1,5 @@
-/* Pendelpilot – Design: dunkles Navy, grüner Akzent, große Zahlen, weiche Karten.
+/* Pendelpilot – Design: dunkles Navy, Markenblau aus dem App-Symbol (+ Orange als Zweitfarbe),
+   große Zahlen, weiche Karten.
    Farben nur über Tokens; Hell/Dunkel per data-theme (Auswahl in den Einstellungen). */
 :root {
   color-scheme: dark;
@@ -12,17 +13,17 @@
   --text: #f3f6fa;
   --text-2: #a9b3c4;
   --muted: #6f7b8f;
-  --accent: #2fd59c;
-  --accent-ink: #04140d;
-  --accent-soft: rgb(47 213 156 / .14);
-  --glow: rgb(47 213 156 / .16);
-  --mark: #f5a524;
-  --good: #2fd59c;
+  --accent: #4b9bff;
+  --accent-ink: #ffffff;
+  --accent-soft: rgb(75 155 255 / .16);
+  --glow: rgb(42 120 214 / .28);
+  --mark: #ff8a4c;
+  --good: #3ccf91;
   --warn: #f5a524;
   --bad: #ff6b6b;
   --grid: rgb(255 255 255 / .06);
   --shadow: 0 1px 0 rgb(255 255 255 / .04) inset, 0 8px 24px rgb(0 0 0 / .25);
-  --seq-0: #12302a; --seq-1: #13493a; --seq-2: #15634b; --seq-3: #1b7f5d; --seq-4: #239d72; --seq-5: #2fbf88; --seq-6: #5fe0b0;
+  --seq-0: #142640; --seq-1: #183660; --seq-2: #1c4a85; --seq-3: #2560ab; --seq-4: #2f78d0; --seq-5: #5598e7; --seq-6: #9ec5f4;
   --radius: 22px;
   --radius-s: 14px;
 }
@@ -38,17 +39,17 @@
   --text: #0b1220;
   --text-2: #4a5568;
   --muted: #8a94a6;
-  --accent: #0fa776;
+  --accent: #2a78d6;
   --accent-ink: #ffffff;
-  --accent-soft: rgb(15 167 118 / .1);
-  --glow: rgb(15 167 118 / .12);
-  --mark: #d97706;
-  --good: #0fa776;
+  --accent-soft: rgb(42 120 214 / .1);
+  --glow: rgb(42 120 214 / .14);
+  --mark: #eb6834;
+  --good: #1a7f4b;
   --warn: #b45309;
   --bad: #dc2626;
   --grid: rgb(15 23 42 / .07);
   --shadow: 0 1px 2px rgb(15 23 42 / .04), 0 6px 20px rgb(15 23 42 / .06);
-  --seq-0: #d6f5e9; --seq-1: #aeead3; --seq-2: #7fdbb8; --seq-3: #4cc79a; --seq-4: #22ad7e; --seq-5: #148a63; --seq-6: #0b6648;
+  --seq-0: #cde2fb; --seq-1: #9ec5f4; --seq-2: #6da7ec; --seq-3: #3987e5; --seq-4: #256abf; --seq-5: #184f95; --seq-6: #0d366b;
 }
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) {
@@ -56,10 +57,10 @@
     --bg: #f3f5f8; --bg-2: #eef1f5; --surface: #ffffff; --surface-2: #f2f4f7; --input: #f6f7f9;
     --border: rgb(15 23 42 / .07); --border-strong: rgb(15 23 42 / .14);
     --text: #0b1220; --text-2: #4a5568; --muted: #8a94a6;
-    --accent: #0fa776; --accent-ink: #ffffff; --accent-soft: rgb(15 167 118 / .1); --glow: rgb(15 167 118 / .12);
-    --mark: #d97706; --good: #0fa776; --warn: #b45309; --bad: #dc2626; --grid: rgb(15 23 42 / .07);
+    --accent: #2a78d6; --accent-ink: #ffffff; --accent-soft: rgb(42 120 214 / .1); --glow: rgb(42 120 214 / .14);
+    --mark: #eb6834; --good: #1a7f4b; --warn: #b45309; --bad: #dc2626; --grid: rgb(15 23 42 / .07);
     --shadow: 0 1px 2px rgb(15 23 42 / .04), 0 6px 20px rgb(15 23 42 / .06);
-    --seq-0: #d6f5e9; --seq-1: #aeead3; --seq-2: #7fdbb8; --seq-3: #4cc79a; --seq-4: #22ad7e; --seq-5: #148a63; --seq-6: #0b6648;
+    --seq-0: #cde2fb; --seq-1: #9ec5f4; --seq-2: #6da7ec; --seq-3: #3987e5; --seq-4: #256abf; --seq-5: #184f95; --seq-6: #0d366b;
   }
 }
 
@@ -269,3 +270,5 @@ ul.reasons li { margin: 4px 0; }
   .kpi b { font-size: 17px; }
   .grid2 { grid-template-columns: minmax(0, 1fr); }
 }
+
+.map-link { color: var(--accent); font-weight: 600; text-decoration: none; margin-left: 10px; white-space: nowrap; }
