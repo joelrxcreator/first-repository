@@ -189,9 +189,10 @@ export function createApp({ store, fetchImpl = fetch, log = console.log, appUrl 
     const sent = await store.getSent(today);
     const decisions = decideNotifications({ nowMin: lp.minutes, today, tomorrow, todayPlan, tomorrowPlan, settings: s, sent });
     const delivered = [];
-    for (const d of decisions) {
+    // Ohne ntfy-Thema nichts als verschickt markieren, sonst fehlen später die ersten echten Nachrichten.
+    for (const d of s.notify.ntfyTopic ? decisions : []) {
       try {
-        if (s.notify.ntfyTopic) await sendNtfy(s.notify.ntfyTopic, { ...d, click: appUrl || undefined }, fetchImpl);
+        await sendNtfy(s.notify.ntfyTopic, { ...d, click: appUrl || undefined }, fetchImpl);
         await store.addSent({ key: d.key, date: d.payload?.date || today, title: d.title, message: d.message, payload: d.payload, ts: now.toISOString() });
         delivered.push(d.title);
       } catch (e) {

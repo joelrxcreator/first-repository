@@ -88,3 +88,15 @@ test('Manuelle Rückmeldung „losgefahren/angekommen“ speichert echte Fahrt',
   assert.equal(legs.length, 1);
   assert.ok(legs[0].depart >= 441 + 510);
 });
+
+test('Ohne ntfy-Thema wird nichts als verschickt markiert', async () => {
+  const store = memoryStore({ settings: { locations: LOC } });
+  const app = createApp({ store, log: () => {} });
+  await app.tick(zonedToUtc('2026-10-11', 20 * 60 + 5));
+  assert.equal(store.db.sent.length, 0);
+  await store.saveSettings({ ...(await store.getSettings()), locations: LOC, notify: { ntfyTopic: 't' } });
+  const sent = [];
+  const app2 = createApp({ store, log: () => {}, fetchImpl: async (u, init) => { sent.push(JSON.parse(init.body)); return { ok: true }; } });
+  await app2.tick(zonedToUtc('2026-10-11', 20 * 60 + 10));
+  assert.ok(sent.some((n) => n.title.startsWith('Morgen')), 'Vorabend-Nachricht kommt nach Einrichtung');
+});

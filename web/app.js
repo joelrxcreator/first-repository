@@ -445,7 +445,7 @@ function settingsView() {
   <div class="card"><h2>Verkehrsdaten</h2>
     <p class="small">Kostenlosen Schlüssel holen: <a href="https://developer.tomtom.com/user/register" target="_blank" rel="noopener">developer.tomtom.com</a> → registrieren → „Keys“ → Schlüssel kopieren und hier einfügen. Kostenlos bis 2.500 Abfragen/Tag (die App braucht ca. 300–700).</p>
     <label class="field">TomTom-Schlüssel<input id="t-key" value="${esc(TR.tomtomKey)}" autocomplete="off"></label>
-    <label class="field">Quelle<select id="t-prov"><option value="tomtom" ${TR.provider === 'tomtom' ? 'selected' : ''}>TomTom (echt)</option><option value="demo" ${TR.provider !== 'tomtom' ? 'selected' : ''}>Demo-Modell</option></select></label>
+    <label class="field">Quelle<select id="t-prov"><option value="tomtom" ${TR.provider !== 'demo' ? 'selected' : ''}>TomTom (sobald Schlüssel eingetragen)</option><option value="demo" ${TR.provider === 'demo' ? 'selected' : ''}>Demo-Modell erzwingen</option></select></label>
     <label class="field">Max. Abfragen pro Tag<input type="number" id="t-limit" value="${TR.apiDailyLimit}"></label>
     <p class="small muted">Heute verbraucht: ${S.ov.usage} Abfragen.</p>
     <button class="btn primary" data-save="traffic">Speichern</button>

@@ -51,7 +51,7 @@ export const DEFAULT_SETTINGS = {
     quietEnd: '05:30',
   },
   traffic: {
-    provider: 'demo', // 'demo' oder 'tomtom'
+    provider: 'tomtom', // 'tomtom' (sobald ein Schlüssel eingetragen ist) oder 'demo'
     tomtomKey: '',
     apiDailyLimit: 2000,
   },
