@@ -609,7 +609,7 @@ function viewWeek() {
       ${windowBar(day, hours, pause, studies)}
     </section>
     <div style="margin-top:24px">${group([
-      `<div class="row" style="cursor:default"><span class="main"><span class="title">Arbeitsstunden</span><span class="desc">ohne Pause</span></span>
+      `<div class="row" style="cursor:default"><span class="main"><span class="title">Stunden</span><span class="desc">ohne Pause</span></span>
         <div class="stepper"><button type="button" class="btn ib" data-a="hours" data-step="-0.5" aria-label="weniger Stunden">${icon('minus')}</button><output class="num">${fmtHours(hours)}</output><button type="button" class="btn ib" data-a="hours" data-step="0.5" aria-label="mehr Stunden">${icon('plus')}</button></div></div>`,
       ...(hours ? [`<div class="fgrid">${field('Frühestens ab', `<input type="time" data-wf="earliest" value="${esc(day.earliest || '06:30')}">`)}${field('Spätestens fertig', `<input type="time" data-wf="latest" value="${esc(day.latest || '19:00')}">`)}</div>`] : []),
     ], { title: 'Arbeit', foot: hours ? 'In diesem Fenster sucht die App den besten Arbeitsbeginn.' : '' })}</div>
@@ -871,7 +871,7 @@ function overrideForm(date, withDate = false) {
   const hours = Number(w?.hours) || 0;
   return `<p class="lead">Für einen einzelnen Tag, der anders ist – z. B. kürzer arbeiten oder frei.</p>
     <div class="group">${withDate ? field('Datum', `<input type="date" id="o-date" value="${date}" min="${S.ov.today}">`) : ''}
-    <div class="row" style="cursor:default"><span class="main"><span class="title">Arbeitsstunden</span><span class="desc">„frei“ = gar nicht arbeiten</span></span>
+    <div class="row" style="cursor:default"><span class="main"><span class="title">Stunden</span><span class="desc">„frei“ = nicht arbeiten</span></span>
       <div class="stepper"><button type="button" class="btn ib" data-a="o-hours" data-step="-0.5" aria-label="weniger">${icon('minus')}</button><output class="num" id="o-hours" data-v="${hours}">${fmtHours(hours)}</output><button type="button" class="btn ib" data-a="o-hours" data-step="0.5" aria-label="mehr">${icon('plus')}</button></div></div>
     <div class="fgrid">${field('Frühestens ab', `<input type="time" id="o-earliest" value="${esc(w?.earliest || '06:30')}">`)}${field('Spätestens fertig', `<input type="time" id="o-latest" value="${esc(w?.latest || '19:00')}">`)}</div></div>
     ${ov ? `<button type="button" class="btn plain" style="margin-top:12px" data-a="del-override" data-date="${date}">Ausnahme entfernen – normaler Plan gilt</button>` : ''}`;
