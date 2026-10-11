@@ -27,7 +27,7 @@ export const DEFAULT_SETTINGS = {
   study: [],
   // Einmalige Termine: category 'private' | 'study' | 'other'; kind 'mandatory' | 'optional'
   appointments: [],
-  // Ausnahmen pro Datum: { work: null | {hours, earliest, latest}, skip: [eventIds] }
+  // Ausnahmen pro Datum: { work: null | {hours, earliest, latest}, skip: [eventIds], departAt: 'HH:MM' }
   overrides: {},
   priorities: {
     commute: 1.0, // 1 Minute im Auto
@@ -122,7 +122,14 @@ export function buildDay(settingsIn, dateStr) {
     events.push(norm(e, e.category || 'private'));
   }
   events.sort((a, b) => a.start - b.start);
-  return { date: dateStr, weekday, work, events };
+  // Selbst gewählte Abfahrt von zuhause (gilt für die erste Fahrt des Tages)
+  const fixedDepart = ov.departAt ? parseHM(ov.departAt) : null;
+  // Wer bewusst früher losfährt, darf auch früher mit der Arbeit anfangen
+  if (work && fixedDepart != null && fixedDepart < work.earliest) {
+    work.baseEarliest = work.earliest;
+    work.earliest = fixedDepart;
+  }
+  return { date: dateStr, weekday, work, events, fixedDepart };
 }
 
 function norm(e, category) {

@@ -10,6 +10,30 @@ import { parseHM } from './time.js';
  * @param opts     { nowMin, state: { location, availableFrom, workStart, workDone } }
  */
 export function planDay(day, travel, settings, opts = {}) {
+  const st = opts.state || {};
+  const fixedOk = day.fixedDepart != null && (st.location || 'home') === 'home' && st.departedAt == null
+    && (opts.nowMin == null || day.fixedDepart >= opts.nowMin);
+  if (day.fixedDepart == null) return planFlexible(day, travel, settings, opts);
+  const w = day.work && day.work.baseEarliest != null ? { ...day.work, earliest: day.work.baseEarliest } : day.work;
+  const free = planFlexible({ ...day, fixedDepart: null, work: w }, travel, settings, opts);
+  if (!fixedOk) return free;
+  const fixed = planFlexible(day, travel, settings, opts);
+  if (fixed.scenarios.length && !fixed.scenarios[0].legs.some((l) => l.from === 'home')) return free; // keine Fahrt von zuhause
+  const best = free.scenarios[0];
+  const freeSummary = best ? { leaveHome: best.totals.leaveHome, arriveHome: best.totals.arriveHome, commute: best.totals.commute, away: best.totals.away, score: best.score } : null;
+  if (!fixed.scenarios.length || (fixed.rescued && !free.rescued)) {
+    free.warnings.unshift(`Abfahrt um ${hm(day.fixedDepart)} passt nicht zu deinen Pflichtterminen – unten der beste machbare Plan.`);
+    free.fixedDepart = { at: day.fixedDepart, feasible: false };
+    return free;
+  }
+  fixed.fixedDepart = { at: day.fixedDepart, feasible: true };
+  fixed.free = freeSummary;
+  return fixed;
+}
+
+const hm = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(Math.round(m % 60)).padStart(2, '0')}`;
+
+function planFlexible(day, travel, settings, opts) {
   const plan = planCore(day, travel, settings, opts, false);
   if (plan.scenarios.length || !day.events.some((e) => e.kind === 'mandatory')) return plan;
   // Notlösung: Pflichttermine sind nicht alle erreichbar → trotzdem den Rest des Tages planen,
@@ -21,6 +45,7 @@ export function planDay(day, travel, settings, opts = {}) {
   rescue.warnings.unshift(missed.size
     ? `Nicht alles schaffbar: ${[...missed].map((t) => `„${t}“`).join(', ')} ist mit Arbeitszeit und Fahrzeiten nicht vollständig erreichbar. Unten der bestmögliche Plan – bitte selbst entscheiden.`
     : 'Pflichttermine und Arbeitszeit passen nur knapp zusammen.');
+  rescue.rescued = true;
   return rescue;
 }
 
@@ -29,7 +54,7 @@ function planCore(day, travel, settings, opts, rescue) {
   const step = P.stepMin || 5;
   const buffer = P.bufferMin ?? 5;
   const maxWait = P.maxWaitAfterMin ?? 120;
-  const dayStart = parseHM(P.dayStart) ?? 270;
+  const dayStart = Math.min(parseHM(P.dayStart) ?? 270, day.fixedDepart ?? Infinity);
   const dayEnd = parseHM(P.dayEnd) ?? 1410;
   const nowMin = opts.nowMin ?? null;
   const state = opts.state || {};
@@ -100,13 +125,16 @@ function planCore(day, travel, settings, opts, rescue) {
   };
 
   const legCache = new Map();
+  const fixedDepart = startLoc === 'home' ? day.fixedDepart ?? null : null;
   // Beste Abfahrt von `from` nach `to`, frühestens ab `free`.
   // deadline = späteste Ankunft (nächster Termin), null = Heimfahrt ohne Frist.
-  function bestLeg(from, to, free, deadline) {
-    const key = `${from}|${to}|${free}|${deadline}`;
+  // fixed = vorgegebene Abfahrtszeit (nur erste Fahrt von zuhause)
+  function bestLeg(from, to, free, deadline, fixed = null) {
+    const key = `${from}|${to}|${free}|${deadline}|${fixed}`;
     if (legCache.has(key)) return legCache.get(key);
-    const lo = Math.ceil(Math.max(free, nowMin ?? -Infinity) / step) * step;
-    const hi = deadline != null ? deadline - buffer : Math.max(lo, Math.min(free + maxWait, dayEnd));
+    let lo = Math.ceil(Math.max(free, nowMin ?? -Infinity) / step) * step;
+    let hi = deadline != null ? deadline - buffer : Math.max(lo, Math.min(free + maxWait, dayEnd));
+    if (fixed != null) { if (fixed < Math.max(free, nowMin ?? -Infinity)) { legCache.set(key, null); return null; } lo = hi = fixed; }
     let best = null;
     for (let d = lo; d <= hi; d += step) {
       const t = tt(from, to, d);
@@ -141,7 +169,7 @@ function planCore(day, travel, settings, opts, rescue) {
       const legs = [];
       for (const a of acts) {
         if (a.loc !== loc) {
-          const L = bestLeg(loc, a.loc, free, a.start);
+          const L = bestLeg(loc, a.loc, free, a.start, !legs.length && loc === 'home' ? fixedDepart : null);
           if (!L) { ok = false; break; }
           legs.push(L);
           cost += L.cost;

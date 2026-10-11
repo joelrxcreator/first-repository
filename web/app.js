@@ -10,7 +10,10 @@ const $$ = (sel, el = document) => [...el.querySelectorAll(sel)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const WD = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag'];
 const WDS = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
-const DEFAULT_API = 'https://ntkooxdivapuznjufdwj.supabase.co/functions/v1/pendel';
+const SB_URL = 'https://ntkooxdivapuznjufdwj.supabase.co';
+const SB_KEY = 'sb_publishable_yf8qU0SGTbFYlt5sSKDrSA_OJmVH9f3'; // öffentlicher Schlüssel, darf im Code stehen
+const DEFAULT_API = `${SB_URL}/functions/v1/pendel`;
+const APP_URL = location.origin + location.pathname;
 
 const hm = (min) => {
   if (min == null || Number.isNaN(min)) return '–';
@@ -109,23 +112,47 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => ap
     history.replaceState(null, '', location.pathname + location.search);
   }
 })();
+// token = alter Zugangsschlüssel (nur bis die Daten einem Konto gehören)
 const conn = () => ({ api: store.get('api') || DEFAULT_API, token: store.get('token') });
+
+// Konto (Supabase Auth): E-Mail + Passwort oder Google
+const sb = window.supabase?.createClient(SB_URL, SB_KEY, { auth: { flowType: 'pkce', persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
+const authed = () => !!S.session || !!conn().token;
 
 async function api(path, { method = 'GET', body } = {}) {
   const { api: base, token } = conn();
+  const headers = { 'Content-Type': 'application/json' };
+  if (S.session && sb) {
+    const { data } = await sb.auth.getSession(); // erneuert die Sitzung bei Bedarf
+    S.session = data.session;
+    if (S.session) headers.Authorization = `Bearer ${S.session.access_token}`;
+  }
+  if (!headers.Authorization && token) headers['x-app-token'] = token;
   let r;
   try {
-    r = await fetch(base.replace(/\/$/, '') + path, {
-      method, headers: { 'Content-Type': 'application/json', 'x-app-token': token || '' },
-      body: body ? JSON.stringify(body) : undefined,
-    });
+    r = await fetch(base.replace(/\/$/, '') + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
   } catch {
     throw new Error(navigator.onLine ? 'Server gerade nicht erreichbar.' : 'Keine Internetverbindung.');
   }
   const j = await r.json().catch(() => ({}));
-  if (r.status === 401) { const e = new Error('Der Zugangsschlüssel stimmt nicht.'); e.auth = true; throw e; }
+  if (r.status === 401) { const e = new Error(j.error || 'Bitte neu anmelden.'); e.auth = true; throw e; }
   if (!r.ok) throw new Error(j.error || `Fehler ${r.status}`);
   return j;
+}
+
+// Fehlermeldungen der Anmeldung verständlich machen
+function authMsg(e) {
+  const m = String(e?.message || e || '');
+  if (/invalid login credentials/i.test(m)) return 'E-Mail oder Passwort stimmt nicht.';
+  if (/email not confirmed/i.test(m)) return 'Bitte bestätige zuerst deine E-Mail – der Link ist in deinem Postfach.';
+  if (/already registered|already been registered|already exists/i.test(m)) return 'Für diese E-Mail gibt es schon ein Konto. Melde dich an.';
+  if (/password should be|password.*(short|least|weak)/i.test(m)) return 'Das Passwort ist zu kurz oder zu einfach – mindestens 8 Zeichen.';
+  if (/rate limit|security purposes|too many/i.test(m)) return 'Zu viele Versuche – bitte warte kurz und versuch es dann erneut.';
+  if (/provider is not enabled|unsupported provider/i.test(m)) return 'Die Anmeldung mit Google ist noch nicht eingerichtet.';
+  if (/valid email|invalid.*email|unable to validate email/i.test(m)) return 'Bitte eine gültige E-Mail-Adresse eingeben.';
+  if (/same.*password|different from the old/i.test(m)) return 'Das neue Passwort muss sich vom alten unterscheiden.';
+  if (/failed to fetch|network/i.test(m)) return navigator.onLine ? 'Server gerade nicht erreichbar.' : 'Keine Internetverbindung.';
+  return m || 'Das hat nicht geklappt.';
 }
 
 const S = {
@@ -135,10 +162,12 @@ const S = {
   loading: true, error: null,
   weekDay: null, tVariant: 0, heatDir: 'out', heatSel: null,
   wizardShown: false,
+  session: null, me: null,
+  auth: { mode: 'login', err: '', email: '', google: null },
 };
 
 async function load({ quiet = false } = {}) {
-  if (!conn().token) return renderWelcome();
+  if (!authed()) return renderAuth();
   if (!quiet && !S.ov) { S.loading = true; render(); }
   try {
     const [ov, settings] = await Promise.all([api('/overview'), api('/settings')]);
@@ -148,7 +177,7 @@ async function load({ quiet = false } = {}) {
     if (!S.wizardShown && setupSteps().filter((x) => !x.done).length >= 3) { S.wizardShown = true; openWizard(); }
   } catch (e) {
     S.loading = false;
-    if (e.auth) { store.del('token'); return renderWelcome('Der Zugangsschlüssel stimmt nicht. Bitte neu einfügen.'); }
+    if (e.auth) return authLost(e.message);
     if (quiet && S.ov) return toast(e.message, 'err');
     S.error = e.message;
     render();
@@ -280,7 +309,7 @@ function renderTabs() {
 }
 
 function render() {
-  if (!conn().token) return renderWelcome();
+  if (!authed()) return renderAuth();
   renderTabs();
   const app = $('#app');
   let html;
@@ -314,27 +343,153 @@ function skeleton() {
 }
 
 // ============================================================================
-// Willkommen / Verbinden
+// Anmelden / Registrieren
 // ============================================================================
-function renderWelcome(err = '') {
+const GOOGLE_G = '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path fill="#4285F4" d="M22.6 12.3c0-.8-.1-1.5-.2-2.3H12v4.3h5.9a5 5 0 0 1-2.2 3.3v2.7h3.6c2.1-1.9 3.3-4.8 3.3-8z"/><path fill="#34A853" d="M12 23c3 0 5.5-1 7.3-2.7l-3.6-2.7c-1 .7-2.2 1-3.7 1-2.9 0-5.3-1.9-6.2-4.5H2.1v2.8A11 11 0 0 0 12 23z"/><path fill="#FBBC05" d="M5.8 14.1a6.6 6.6 0 0 1 0-4.2V7.1H2.1a11 11 0 0 0 0 9.8z"/><path fill="#EA4335" d="M12 5.4c1.6 0 3.1.6 4.2 1.7l3.2-3.2A11 11 0 0 0 2.1 7.1l3.7 2.8C6.7 7.3 9.1 5.4 12 5.4z"/></svg>';
+
+// Ist „Mit Google anmelden“ im Server eingeschaltet?
+async function loadAuthSettings() {
+  if (loadAuthSettings.busy) return;
+  loadAuthSettings.busy = true;
+  try {
+    const r = await fetch(`${SB_URL}/auth/v1/settings`, { headers: { apikey: SB_KEY } });
+    const j = await r.json();
+    S.auth.google = !!j?.external?.google;
+  } catch { S.auth.google = false; }
+  if (S.auth.google && $('main.auth')) renderAuth();
+}
+
+function renderAuth(err) {
+  if (err != null) { S.auth.err = err; S.auth.info = ''; }
   $('#tabbar').hidden = true; setDock('');
-  $('#app').innerHTML = `<main class="welcome">
-    <img class="logo" src="${LOGO}" alt="">
-    <h1>Weniger Stau.<br>Mehr Tag.</h1>
-    <p class="lead">Pendelpilot plant deine Fahrten rund um Arbeit, Uni und Termine – und sagt dir rechtzeitig, wann du am besten losfährst.</p>
-    <ul class="pts">
-      <li>${icon('clock')}<div><b>Die beste Abfahrtszeit</b><span>aus Verkehrsprognose, Live-Lage und deinen Erfahrungen</span></div></li>
-      <li>${icon('bell')}<div><b>Rechtzeitig erinnert</b><span>nie mitten in der Vorlesung</span></div></li>
-      <li>${icon('route')}<div><b>Alternativen im Vergleich</b><span>früher heim oder weniger Fahrt – du entscheidest</span></div></li>
-    </ul>
-    <div class="group">
-      ${field('Zugangsschlüssel', `<input id="w-token" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="einfügen" ${err ? 'aria-invalid="true"' : ''}>`, { err, hint: 'Den Schlüssel hast du beim Einrichten bekommen.' })}
-    </div>
-    <details style="margin-top:12px"><summary class="caption t-3" style="min-height:44px;display:flex;align-items:center;cursor:pointer">Anderen Server verwenden</summary>
-      <div class="group">${field('Server-Adresse', `<input id="w-api" value="${esc(conn().api)}" autocapitalize="off" autocorrect="off" spellcheck="false">`)}</div>
-    </details>
-    <button class="btn primary lg block" style="margin-top:24px" data-a="connect">Loslegen ${icon('arrow-right')}</button>
-  </main>`;
+  const a = S.auth;
+  if (a.google == null) loadAuthSettings();
+  const legacy = !!conn().token;
+  const msg = `${a.err ? `<div class="note error" role="alert">${icon('triangle-alert')}<div class="grow callout">${esc(a.err)}</div></div>` : ''}${a.info ? `<div class="note">${icon('circle-check')}<div class="grow callout">${esc(a.info)}</div></div>` : ''}`;
+  const emailField = (auto = 'email') => field('E-Mail', `<input id="au-email" type="email" inputmode="email" autocomplete="${auto}" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="name@beispiel.de" value="${esc(a.email)}" enterkeyhint="next">`);
+  let body;
+  if (a.mode === 'sent' || a.mode === 'reset-sent') {
+    body = `<div class="ill-big">${icon('mail')}</div>
+      <h1>Schau in dein Postfach</h1>
+      <p class="lead">${a.mode === 'sent' ? `Wir haben dir eine E-Mail an <b>${esc(a.email)}</b> geschickt. Tippe auf den Link darin, um dein Konto zu bestätigen – danach meldest du dich hier an.` : `Falls es ein Konto für <b>${esc(a.email)}</b> gibt, ist jetzt ein Link zum Zurücksetzen unterwegs.`}</p>
+      <p class="caption t-3">Nichts angekommen? Schau auch im Spam-Ordner nach.</p>
+      <button type="button" class="btn primary lg block" style="margin-top:24px" data-a="auth-mode" data-mode="login">Zur Anmeldung</button>`;
+  } else if (a.mode === 'reset') {
+    body = `<h1>Passwort vergessen?</h1>
+      <p class="lead">Gib deine E-Mail ein. Wir schicken dir einen Link, mit dem du ein neues Passwort festlegst.</p>
+      ${msg}
+      <form id="auth-form" novalidate><div class="group">${emailField()}</div>
+      <button type="submit" class="btn primary lg block" style="margin-top:20px">Link schicken</button></form>
+      <button type="button" class="btn plain block" style="margin-top:8px" data-a="auth-mode" data-mode="login">${icon('chevron-left')}Zurück zur Anmeldung</button>`;
+  } else {
+    const signup = a.mode === 'signup';
+    body = `${signup ? '<h1>Weniger Stau.<br>Mehr Tag.</h1>' : '<h1>Willkommen zurück</h1>'}
+      <p class="lead">${signup ? 'Pendelpilot plant deine Fahrten rund um Arbeit, Uni und Termine – und sagt dir rechtzeitig, wann du am besten losfährst.' : 'Melde dich an, um deinen Plan zu sehen.'}</p>
+      ${legacy ? `<div class="note">${icon('shield-check')}<div class="grow callout">${signup ? 'Erstelle' : 'Melde dich an mit'} deinem Konto – deine bisherigen Daten werden automatisch übernommen.</div></div>` : ''}
+      ${msg}
+      ${a.google ? `<button type="button" class="btn google lg block" data-a="auth-google">${GOOGLE_G}Mit Google ${signup ? 'registrieren' : 'anmelden'}</button>
+        <div class="or"><span>oder mit E-Mail</span></div>` : ''}
+      <form id="auth-form" novalidate><div class="group">
+        ${emailField()}
+        ${field('Passwort', `<div class="inline-field pw"><input id="au-pw" type="password" autocomplete="${signup ? 'new-password' : 'current-password'}" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="${signup ? 'mindestens 8 Zeichen' : 'Passwort'}" enterkeyhint="go"><button type="button" class="btn ib" data-a="pw-eye" aria-label="Passwort zeigen">${icon('eye')}</button></div>`)}
+      </div>
+      <button type="submit" class="btn primary lg block" style="margin-top:20px">${signup ? 'Konto erstellen' : 'Anmelden'}</button></form>
+      ${signup ? '' : `<button type="button" class="btn plain block" style="margin-top:4px" data-a="auth-mode" data-mode="reset">Passwort vergessen?</button>`}
+      <p class="switch">${signup ? 'Schon ein Konto?' : 'Neu hier?'} <button type="button" class="btn plain" data-a="auth-mode" data-mode="${signup ? 'login' : 'signup'}">${signup ? 'Anmelden' : 'Konto erstellen'}</button></p>
+      ${a.fromApp ? `<button type="button" class="btn plain block" data-a="auth-cancel">Abbrechen</button>` : ''}
+      <p class="caption t-3 fine">Deine Daten gehören nur dir. Du kannst dein Konto jederzeit löschen.</p>`;
+  }
+  const keepPw = $('#au-pw')?.value, keepMode = renderAuth.mode;
+  $('#app').innerHTML = `<main class="welcome auth"><img class="logo" src="${LOGO}" alt="Pendelpilot">${body}</main>`;
+  if (keepPw && keepMode === a.mode && $('#au-pw')) $('#au-pw').value = keepPw;
+  renderAuth.mode = a.mode;
+  window.scrollTo(0, 0);
+}
+
+async function authSubmit(btn) {
+  const a = S.auth;
+  const em = $('#au-email'), pw = $('#au-pw');
+  const email = em.value.trim();
+  a.email = email;
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { em.setAttribute('aria-invalid', 'true'); em.focus(); return toast('Bitte eine gültige E-Mail-Adresse eingeben', 'err'); }
+  if (!sb) return toast('Anmeldung gerade nicht möglich – bitte App neu laden', 'err');
+  if (a.mode !== 'reset' && (!pw.value || (a.mode === 'signup' && pw.value.length < 8))) {
+    pw.setAttribute('aria-invalid', 'true'); pw.focus();
+    return toast(a.mode === 'signup' ? 'Das Passwort braucht mindestens 8 Zeichen' : 'Bitte dein Passwort eingeben', 'err');
+  }
+  btn?.classList.add('loading');
+  try {
+    if (a.mode === 'reset') {
+      const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: APP_URL });
+      if (error) throw error;
+      a.mode = 'reset-sent'; a.err = ''; return renderAuth();
+    }
+    if (a.mode === 'signup') {
+      const { data, error } = await sb.auth.signUp({ email, password: pw.value, options: { emailRedirectTo: APP_URL } });
+      if (error) throw error;
+      if (data.session) return onSignedIn(data.session);
+      if (data.user && Array.isArray(data.user.identities) && !data.user.identities.length) throw new Error('already registered');
+      a.mode = 'sent'; a.err = ''; return renderAuth();
+    }
+    const { data, error } = await sb.auth.signInWithPassword({ email, password: pw.value });
+    if (error) throw error;
+    return onSignedIn(data.session);
+  } catch (e) {
+    a.err = authMsg(e); a.info = '';
+    renderAuth();
+  } finally { btn?.classList.remove('loading'); }
+}
+
+async function onSignedIn(session) {
+  S.session = session;
+  store.set('wasLoggedIn', '1');
+  S.auth = { mode: 'login', err: '', info: '', email: '', google: S.auth.google };
+  $('#app').innerHTML = `<div class="view">${skeleton()}</div>`;
+  await afterLogin();
+}
+
+// Nach dem Anmelden: alte Daten (Zugangsschlüssel) einmalig ins Konto übernehmen
+async function afterLogin() {
+  try {
+    S.me = await api('/me');
+    const legacyToken = conn().token;
+    if (S.me.legacyAvailable && legacyToken) {
+      try {
+        await api('/claim', { method: 'POST', body: { legacyToken } });
+        store.del('token');
+        S.me.legacyAvailable = false;
+        setTimeout(() => toast('Deine bisherigen Daten sind jetzt in deinem Konto'), 600);
+      } catch (e) { toast(`Übernahme hat nicht geklappt – ${e.message}`, 'err'); }
+    } else if (legacyToken) store.del('token');
+  } catch (e) {
+    if (e.auth) return authLost('Bitte melde dich erneut an.');
+  }
+  S.ov = null; S.settings = null; S.wizardShown = false;
+  load();
+}
+
+// Sitzung auf diesem Gerät sicher entfernen – auch ohne Netz
+async function signOutLocal() {
+  if (sb) await sb.auth.signOut({ scope: 'local' }).catch(() => {});
+  try { Object.keys(localStorage).filter((k) => /^sb-.*-auth-token/.test(k)).forEach((k) => localStorage.removeItem(k)); } catch { /* privat */ }
+}
+
+async function authLost(msg) {
+  if (S.session) await signOutLocal();
+  S.session = null; S.me = null;
+  store.del('token');
+  S.ov = null; S.settings = null;
+  S.auth.mode = store.get('wasLoggedIn') ? 'login' : 'signup';
+  renderAuth(msg || '');
+}
+
+function openNewPassword(fromRecovery = false) {
+  openSheet({
+    title: fromRecovery ? 'Neues Passwort festlegen' : 'Passwort ändern',
+    body: `<p class="lead">${fromRecovery ? 'Lege jetzt ein neues Passwort für dein Konto fest.' : 'Mindestens 8 Zeichen. Danach meldest du dich auf anderen Geräten mit dem neuen Passwort an.'}</p>
+      <div class="group">${field('Neues Passwort', `<input id="np-pw" type="password" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="mindestens 8 Zeichen">`)}</div>`,
+    footer: '<button type="button" class="btn primary lg block" data-a="np-save">Passwort speichern</button>',
+  });
 }
 
 // ============================================================================
@@ -546,7 +701,7 @@ function viewToday() {
     }
   }
   h += `<section class="section"><button type="button" class="btn tinted block" data-a="override-today">${icon('pencil')}Heute ist anders …</button></section>`;
-  h += `<p class="caption t-3" style="margin-top:24px">Berechnet ${hm(minOfIso(plan.computedAt))} · aktualisiert sich automatisch</p></div>`;
+  h += `<p class="caption t-3" style="margin-top:24px">Berechnet ${hm(minOfIso(plan.computedAt))} · <button type="button" class="link-btn" data-a="refresh-now">Jetzt aktualisieren</button></p></div>`;
   setDock(dock);
   return h;
 }
@@ -602,10 +757,13 @@ function viewTomorrow() {
     return `${h}</div>`;
   }
   if (opts.length > 1) {
-    const seen = new Set(['Empfohlen']);
+    const first = plan.fixedDepart?.feasible ? 'Deine Abfahrt' : 'Empfohlen';
+    const seen = new Set([first]);
     h += seg('tvar', opts.map((o, i) => {
-      let l = i === 0 ? 'Empfohlen' : SHORT[o.label] || o.label;
+      let l = i === 0 ? first : SHORT[o.label] || o.label;
       if (i && (seen.has(l) || l === 'Option')) l = `${hm(o.legs[0]?.depart)} los`;
+      if (i && seen.has(l)) l = `heim ${hm(o.totals.arriveHome)}`;
+      if (i && seen.has(l)) l = `Variante ${i + 1}`;
       seen.add(l);
       return [i, esc(l)];
     }), S.tVariant);
@@ -622,9 +780,61 @@ function viewTomorrow() {
     <div><div class="k">Im Auto</div><div class="v">${dur(sc.totals.commute)}</div>${delta(sc.totals.commute, best.totals.commute)}</div>
     <div><div class="k">Zu Hause</div><div class="v">${hm(sc.totals.arriveHome)}</div>${delta(sc.totals.arriveHome, best.totals.arriveHome)}</div>
   </div>`;
+  h += departPicker(plan);
   h += agenda(sc, plan);
-  h += `<p class="caption t-3" style="margin-top:16px">Prognose. Morgen früh wird mit der echten Verkehrslage nachjustiert – du bekommst Bescheid, wenn sich etwas ändert.</p></div>`;
+  h += `<p class="caption t-3" style="margin-top:16px">Berechnet ${hm(minOfIso(plan.computedAt))} · <button type="button" class="link-btn" data-a="refresh-now">Jetzt aktualisieren</button><br>Prognose. Morgen früh wird mit der echten Verkehrslage nachjustiert – du bekommst Bescheid, wenn sich etwas ändert.</p></div>`;
   return h;
+}
+
+// „Wann willst du los?“ – Fahrzeit für eine selbst gewählte Abfahrt sofort zeigen
+function firstHomeLeg(plan) {
+  for (const sc of plan.scenarios || []) { const l = sc.legs.find((x) => x.from === 'home'); if (l) return l; }
+  return null;
+}
+function travelAt(curve, m) {
+  const p = curve?.points;
+  if (!p?.length || m < p[0][0] || m > p[p.length - 1][0]) return null;
+  for (let i = 1; i < p.length; i++) {
+    if (m <= p[i][0]) { const [a, va] = p[i - 1], [b, vb] = p[i]; return va + ((vb - va) * (m - a)) / (b - a || 1); }
+  }
+  return p[p.length - 1][1];
+}
+function departPicker(plan) {
+  const leg = firstHomeLeg(plan);
+  if (!leg) return '';
+  const fx = plan.fixedDepart;
+  const best = plan.scenarios[0];
+  const cur = fx?.feasible ? fx.at : leg.depart;
+  return `<section class="section depart-pick" data-date="${plan.date}" data-to="${esc(leg.to)}">
+    <div class="section-h"><h2>Wann willst du los?</h2>${fx?.feasible ? chip('festgelegt', 'blue') : ''}</div>
+    ${fx?.feasible && best.freeText ? `<p class="callout t-2" style="margin:0 0 12px">${esc(best.freeText)}.</p>` : ''}
+    <div class="pick">
+      <label class="pick-time"><span class="overline">Abfahrt</span><input type="time" id="dp-time" value="${hm(cur)}" step="300" aria-label="Abfahrtszeit"></label>
+      <div class="pick-out" id="dp-out" aria-live="polite"></div>
+    </div>
+    <div class="pick-actions">
+      <button type="button" class="btn primary block" data-a="set-depart" id="dp-set">${icon('check')}Für morgen festlegen</button>
+      ${fx ? `<button type="button" class="btn plain block" data-a="clear-depart">Vorgabe aufheben – die App wählt wieder</button>` : ''}
+    </div>
+  </section>`;
+}
+function drawDepartPreview() {
+  const box = $('.depart-pick'), out = $('#dp-out'), inp = $('#dp-time');
+  if (!box || !out || !inp) return;
+  const plan = S.ov.tomorrowPlan;
+  const to = box.dataset.to;
+  const m = parseHM(inp.value);
+  const curve = plan.curves?.[`home>${to}`];
+  const best = firstHomeLeg(plan);
+  const v = m == null ? null : travelAt(curve, m);
+  const fixedAt = plan.fixedDepart?.feasible ? plan.fixedDepart.at : null;
+  $('#dp-set').disabled = m == null || m === fixedAt;
+  if (v == null) { out.innerHTML = `<span class="t-3 callout">${m == null ? 'Uhrzeit wählen' : 'Für diese Uhrzeit gibt es noch keine Prognose'}</span>`; return; }
+  const free = plan.free?.leaveHome ?? (fixedAt == null ? best.depart : null);
+  const freeMin = free != null ? travelAt(curve, free) : null;
+  const d = freeMin != null ? Math.round(v - freeMin) : 0;
+  out.innerHTML = `<b class="num">${dur(v)}</b><span>Fahrt nach ${esc(place(to))} · an ${hm(m + v)}</span>
+    ${free != null && free !== m ? `<span class="${d > 1 ? 'worse' : d < -1 ? 'better' : 't-3'}">${d > 1 ? `${dur(d)} länger als` : d < -1 ? `${dur(d)} kürzer als` : 'etwa so lang wie'} um ${hm(free)} (beste Zeit)</span>` : free === m ? '<span class="better">Das ist die beste Zeit</span>' : ''}`;
 }
 
 // ============================================================================
@@ -763,7 +973,8 @@ function viewMore() {
   const open = setupSteps().filter((x) => !x.done).length;
   const nLoc = Object.values(s.locations).filter((l) => l.lat != null).length;
   return `<div class="view">${ph('Mehr')}
-    <div class="profile"><img class="logo" src="${LOGO}" alt=""><div style="min-width:0"><b>Pendelpilot</b><span>${S.ov.provider === 'tomtom' ? 'Live-Verkehr aktiv' : 'Demo-Verkehr'} · Benachrichtigungen ${notifyActive() ? 'an' : 'aus'}</span></div></div>
+    <div class="profile"><img class="logo" src="${LOGO}" alt=""><div style="min-width:0"><b>${S.session?.user?.email ? esc(S.session.user.email) : 'Pendelpilot'}</b><span>${S.ov.provider === 'tomtom' ? 'Live-Verkehr aktiv' : 'Demo-Verkehr'} · Benachrichtigungen ${notifyActive() ? 'an' : 'aus'}</span></div></div>
+    ${!S.session ? group([row({ title: 'Konto erstellen', desc: 'Damit deine Daten sicher zu dir gehören – mit E-Mail oder Google', tile: 'user-round', action: 'to-auth' })], { icons: true }) + '<div style="height:24px"></div>' : ''}
     ${open ? group([row({ title: 'Einrichtung abschließen', desc: `${4 - open} von 4 erledigt`, tile: 'sparkles', action: 'wizard' })], { icons: true }) + '<div style="height:24px"></div>' : ''}
     ${group([
       row({ title: 'Verkehrsdaten', tile: 'navigation', val: s.traffic.tomtomKey ? 'Verbunden' : 'Fehlt', valCls: s.traffic.tomtomKey ? 'ok' : 'todo', action: 'sub', data: 'data-sub="traffic"' }),
@@ -780,7 +991,7 @@ function viewMore() {
     ${group([
       row({ title: 'Darstellung', tile: 'sun-moon', tileCls: 'gray', val: { auto: 'Automatisch', light: 'Hell', dark: 'Dunkel' }[theme()], action: 'sub', data: 'data-sub="look"' }),
       row({ title: 'Sicherung', tile: 'download', tileCls: 'green', action: 'sub', data: 'data-sub="backup"' }),
-      row({ title: 'Verbindung', tile: 'link', tileCls: 'gray', action: 'sub', data: 'data-sub="conn"' }),
+      row({ title: 'Konto', tile: 'user-round', tileCls: 'gray', val: S.session ? '' : 'nicht angemeldet', valCls: S.session ? '' : 'todo', action: 'sub', data: 'data-sub="account"' }),
     ], { icons: true })}
     <p class="caption t-3" style="margin-top:24px">Pendelpilot · Verkehrsdaten © TomTom · Icons Lucide</p>
   </div>`;
@@ -879,7 +1090,7 @@ const SUBS = {
     const est = estimateCalls(T);
     const max = Math.max(T.apiDailyLimit, ...(act?.days || []).map((d) => d.calls), 1);
     const opt = (key, values, cur) => values.map(([v, l]) => `<option value="${v}" ${String(cur) === String(v) ? 'selected' : ''}>${l}</option>`).join('');
-    const KIND = { live: 'Live-Lage gemessen', 'forecast-today': 'Prognose heute aufgefrischt', 'forecast-tomorrow': 'Prognose für morgen geholt', limit: 'Tageslimit erreicht', 'notify-push': 'Mitteilung fehlgeschlagen', 'notify-ntfy': 'ntfy fehlgeschlagen' };
+    const KIND = { live: 'Live-Lage gemessen', 'forecast-today': 'Prognose heute aufgefrischt', 'forecast-tomorrow': 'Prognose für morgen geholt', limit: 'Tageslimit erreicht', refresh: 'Von dir aktualisiert', 'notify-push': 'Mitteilung fehlgeschlagen', 'notify-ntfy': 'ntfy fehlgeschlagen' };
     return `<div class="view">${back()}${ph('Datenabrufe')}
       <p class="callout t-2" style="margin:-8px 0 20px">Hier siehst du, wann die App Verkehrsdaten bei TomTom abruft, und stellst ein, wie oft. Seltener spart Abfragen, häufiger macht die Empfehlung genauer.</p>
       <div class="usage"><div class="usage-top"><b class="num">${S.ov.usage}</b><span>von ${T.apiDailyLimit} heute</span></div>
@@ -947,11 +1158,26 @@ const SUBS = {
       ${group([row({ title: 'Aus Datei wiederherstellen', tile: 'upload', tileCls: 'gray', action: 'import', chev: false })], { icons: true, foot: 'Ersetzt deine aktuellen Daten. Vorher wird nachgefragt.' })}
       <input type="file" id="f-file" accept="application/json,.json" hidden></div>`;
   },
-  conn() {
+  account() {
     setDock('');
-    return `<div class="view">${back()}${ph('Verbindung')}
-      ${group([row({ title: 'Server', desc: esc(conn().api) })])}
-      <div style="height:24px"></div>${group([row({ title: 'Von diesem Gerät abmelden', cls: 'danger', action: 'logout', chev: false })], { foot: 'Deine Daten bleiben auf dem Server erhalten.' })}</div>`;
+    if (!S.session) {
+      return `<div class="view">${back()}${ph('Konto')}
+        <p class="callout t-2" style="margin:-8px 0 20px">Du nutzt die App noch mit dem alten Zugangsschlüssel. Erstelle ein Konto (E-Mail oder Google) – deine bisherigen Daten werden dabei automatisch übernommen.</p>
+        <button type="button" class="btn primary lg block" data-a="to-auth">${icon('user-round')}Konto erstellen oder anmelden</button></div>`;
+    }
+    const u = S.session.user || {};
+    const prov = u.app_metadata?.providers || [u.app_metadata?.provider].filter(Boolean);
+    const via = prov.includes('google') ? (prov.includes('email') ? 'Google & E-Mail' : 'Google') : 'E-Mail';
+    return `<div class="view">${back()}${ph('Konto')}
+      ${group([row({ title: 'Angemeldet als', desc: esc(u.email || ''), tile: 'mail', val: via })], { icons: true })}
+      ${S.me?.legacyAvailable ? `<div style="height:24px"></div>${group([row({ title: 'Bisherige Daten übernehmen', desc: 'Mit dem alten Zugangsschlüssel', tile: 'key-round', tileCls: 'orange', action: 'claim-sheet' })], { icons: true })}` : ''}
+      <div style="height:24px"></div>
+      ${group([
+        row({ title: prov.includes('email') ? 'Passwort ändern' : 'Passwort festlegen', tile: 'lock', tileCls: 'gray', action: 'pw-change', chev: false }),
+        row({ title: 'Abmelden', tile: 'log-out', tileCls: 'gray', action: 'logout', chev: false }),
+      ], { icons: true, foot: 'Deine Daten bleiben in deinem Konto. Auf einem neuen Handy meldest du dich einfach wieder an.' })}
+      <div style="height:24px"></div>
+      ${group([row({ title: 'Konto löschen', cls: 'danger', action: 'delete-account', chev: false })], { foot: 'Löscht dein Konto und alle Daten endgültig.' })}</div>`;
   },
 };
 
@@ -1001,7 +1227,8 @@ function overrideForm(date, withDate = false) {
     <div class="group">${withDate ? field('Datum', `<input type="date" id="o-date" value="${date}" min="${S.ov.today}">`) : ''}
     <div class="row" style="cursor:default"><span class="main"><span class="title">Stunden</span><span class="desc">„frei“ = nicht arbeiten</span></span>
       <div class="stepper"><button type="button" class="btn ib" data-a="o-hours" data-step="-0.5" aria-label="weniger">${icon('minus')}</button><output class="num" id="o-hours" data-v="${hours}">${fmtHours(hours)}</output><button type="button" class="btn ib" data-a="o-hours" data-step="0.5" aria-label="mehr">${icon('plus')}</button></div></div>
-    <div class="fgrid">${field('Frühestens ab', `<input type="time" id="o-earliest" value="${esc(w?.earliest || '06:30')}">`)}${field('Spätestens fertig', `<input type="time" id="o-latest" value="${esc(w?.latest || '19:00')}">`)}</div></div>
+    <div class="fgrid">${field('Frühestens ab', `<input type="time" id="o-earliest" value="${esc(w?.earliest || '06:30')}">`)}${field('Spätestens fertig', `<input type="time" id="o-latest" value="${esc(w?.latest || '19:00')}">`)}</div>
+    ${field('Losfahren um (optional)', `<input type="time" id="o-depart" value="${esc(ov?.departAt || '')}">`, { hint: 'Leer lassen = die App sucht die beste Zeit.' })}</div>
     ${ov ? `<button type="button" class="btn plain" style="margin-top:12px" data-a="del-override" data-date="${date}">Ausnahme entfernen – normaler Plan gilt</button>` : ''}`;
 }
 function openOverride(date, label) {
@@ -1117,12 +1344,33 @@ const A = {
     const e = $('#o-earliest').value, l = $('#o-latest').value;
     if (!date) return toast('Bitte ein Datum wählen', 'err');
     if (hours > 0 && (!e || !l || l <= e)) return toast('„Spätestens“ muss nach „frühestens“ liegen', 'err');
-    saveSettings((s) => { s.overrides ||= {}; s.overrides[date] = { ...(s.overrides[date] || {}), work: hours > 0 ? { hours, earliest: e, latest: l } : null }; }, hours ? 'Tag angepasst' : 'Als frei eingetragen', { button: b }).then((ok) => ok && closeSheet());
+    const dep = $('#o-depart')?.value || '';
+    saveSettings((s) => {
+      s.overrides ||= {};
+      const o = { ...(s.overrides[date] || {}), work: hours > 0 ? { hours, earliest: e, latest: l } : null };
+      if (dep) o.departAt = dep; else delete o.departAt;
+      s.overrides[date] = o;
+    }, hours ? 'Tag angepasst' : 'Als frei eingetragen', { button: b }).then((ok) => { if (ok) { closeSheet(); refreshDay(date); } });
   },
+  'set-depart'(b) {
+    const v = $('#dp-time').value, date = $('.depart-pick').dataset.date;
+    if (!v) return toast('Bitte eine Uhrzeit wählen', 'err');
+    saveSettings((s) => { s.overrides ||= {}; s.overrides[date] = { ...(s.overrides[date] || {}), departAt: v }; }, `Abfahrt ${v} festgelegt`, { button: b })
+      .then((ok) => ok && refreshDay(date));
+  },
+  'clear-depart'(b) {
+    const date = $('.depart-pick').dataset.date;
+    saveSettings((s) => {
+      const o = { ...(s.overrides?.[date] || {}) };
+      delete o.departAt;
+      if (Object.keys(o).length) s.overrides[date] = o; else delete s.overrides[date];
+    }, 'Die App wählt wieder die beste Zeit', { button: b }).then((ok) => ok && refreshDay(date));
+  },
+  'refresh-now'(b) { pullRefresh(b); },
   'del-override'(b) {
     const d = b.dataset.date;
     if (!confirm(`Ausnahme für ${fmtDate(d)} entfernen? Dann gilt wieder dein normaler Plan.`)) return;
-    saveSettings((s) => { delete s.overrides[d]; }, 'Ausnahme entfernt').then(() => closeSheet());
+    saveSettings((s) => { delete s.overrides[d]; }, 'Ausnahme entfernt').then((ok) => { closeSheet(); if (ok) refreshDay(d); });
   },
 
   'save-item'(b) {
@@ -1212,19 +1460,84 @@ const A = {
     toast('Sicherung gespeichert');
   },
   import() { $('#f-file').click(); },
-  logout() {
-    if (!confirm('Von diesem Gerät abmelden? Deine Daten bleiben erhalten, du brauchst danach den Zugangsschlüssel erneut.')) return;
-    store.del('token'); S.ov = null; S.settings = null; S.wizardShown = false; renderWelcome();
+  async logout(b) {
+    if (!confirm('Abmelden? Deine Daten bleiben in deinem Konto. Mitteilungen kommen auf diesem Gerät dann nicht mehr.')) return;
+    b?.classList.add('loading');
+    try { if (pushSub) { await api('/push/unsubscribe', { method: 'POST', body: { endpoint: pushSub.endpoint } }); await pushSub.unsubscribe(); } } catch { /* trotzdem abmelden */ }
+    pushSub = null;
+    await signOutLocal();
+    S.session = null; S.wizardShown = false; S.auth.mode = 'login';
+    await authLost('');
   },
-  async connect(b) {
-    const inp = $('#w-token');
-    const token = inp.value.trim();
-    const apiUrl = $('#w-api')?.value.trim() || DEFAULT_API;
-    if (token.length < 20) { inp.setAttribute('aria-invalid', 'true'); inp.focus(); return toast('Bitte den Zugangsschlüssel einfügen', 'err'); }
-    if (!/^https?:\/\//.test(apiUrl)) return toast('Bitte die Server-Adresse prüfen', 'err');
-    store.set('api', apiUrl); store.set('token', token);
+  // Konto
+  'auth-mode'(b) { S.auth.email = $('#au-email')?.value.trim() ?? S.auth.email; S.auth.mode = b.dataset.mode; S.auth.err = ''; S.auth.info = ''; renderAuth(); },
+  async 'auth-google'(b) {
+    if (!sb) return;
     b.classList.add('loading');
-    await load();
+    const { error } = await sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: APP_URL } });
+    if (error) { b.classList.remove('loading'); S.auth.err = authMsg(error); renderAuth(); }
+  },
+  'pw-eye'(b) {
+    const inp = b.parentElement.querySelector('input');
+    const show = inp.type === 'password';
+    inp.type = show ? 'text' : 'password';
+    b.innerHTML = icon(show ? 'eye-off' : 'eye');
+    b.setAttribute('aria-label', show ? 'Passwort verbergen' : 'Passwort zeigen');
+  },
+  'to-auth'() { S.auth.fromApp = true; S.auth.mode = 'signup'; S.auth.err = ''; renderAuth(); },
+  'auth-cancel'() { S.auth.fromApp = false; render(); },
+  'pw-change'() { openNewPassword(false); },
+  async 'np-save'(b) {
+    const inp = $('#np-pw');
+    if (inp.value.length < 8) { inp.setAttribute('aria-invalid', 'true'); inp.focus(); return toast('Mindestens 8 Zeichen', 'err'); }
+    b.classList.add('loading');
+    const { error } = await sb.auth.updateUser({ password: inp.value });
+    b.classList.remove('loading');
+    if (error) return toast(authMsg(error), 'err');
+    closeSheet(); toast('Neues Passwort gespeichert');
+    if (!S.ov) load();
+  },
+  'claim-sheet'() {
+    openSheet({
+      title: 'Bisherige Daten übernehmen',
+      body: `<p class="lead">Füge den Zugangsschlüssel ein, den du vor den Konten benutzt hast. Dann landen deine bisherigen Einstellungen, Termine und gelernten Fahrzeiten in diesem Konto.</p>
+        <div class="group">${field('Zugangsschlüssel', '<input id="cl-token" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="einfügen">')}</div>
+        <p class="gfoot">Achtung: Was du in diesem Konto schon eingestellt hast, wird dabei ersetzt.</p>`,
+      footer: '<button type="button" class="btn primary lg block" data-a="claim">Übernehmen</button>',
+    });
+  },
+  async claim(b) {
+    const t = $('#cl-token').value.trim();
+    if (t.length < 20) return toast('Bitte den Zugangsschlüssel einfügen', 'err');
+    b.classList.add('loading');
+    try {
+      await api('/claim', { method: 'POST', body: { legacyToken: t } });
+      S.me.legacyAvailable = false;
+      closeSheet(); toast('Daten übernommen'); S.ov = null; load();
+    } catch (e) { toast(e.message, 'err'); b.classList.remove('loading'); }
+  },
+  'delete-account'() {
+    openSheet({
+      title: 'Konto löschen',
+      body: `<div class="note error">${icon('triangle-alert')}<div class="grow callout">Dein Konto und <b>alle Daten</b> – Einstellungen, Termine, gelernte Fahrzeiten – werden endgültig gelöscht. Das lässt sich nicht rückgängig machen.</div></div>
+        <p class="callout t-2" style="margin:16px 0 8px">Tipp: Speichere vorher unter Mehr → Sicherung eine Kopie.</p>
+        <div class="group">${field('Zum Bestätigen LÖSCHEN eintippen', '<input id="del-confirm" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false" placeholder="LÖSCHEN">')}</div>`,
+      footer: '<button type="button" class="btn danger lg block" data-a="delete-account-go">Konto endgültig löschen</button>',
+    });
+  },
+  async 'delete-account-go'(b) {
+    const v = $('#del-confirm').value.trim().toUpperCase();
+    if (v !== 'LÖSCHEN') { $('#del-confirm').setAttribute('aria-invalid', 'true'); return toast('Bitte genau LÖSCHEN eintippen', 'err'); }
+    b.classList.add('loading');
+    try {
+      await api('/account/delete', { method: 'POST', body: { confirm: 'LÖSCHEN' } });
+      await pushSub?.unsubscribe().catch(() => {});
+      pushSub = null;
+      closeSheet(true);
+      store.del('wasLoggedIn');
+      await authLost('');
+      toast('Dein Konto wurde gelöscht');
+    } catch (e) { toast(e.message, 'err'); b.classList.remove('loading'); }
   },
   // Einrichtung
   'wiz-back'() { wiz = Math.max(0, wiz - 1); drawWizard(); },
@@ -1337,6 +1650,8 @@ document.addEventListener('input', (e) => {
     $(`#o-${t.dataset.prio}`).textContent = level(Number(t.value), max);
   }
   if (t.getAttribute('aria-invalid') === 'true' && t.value.trim()) t.removeAttribute('aria-invalid');
+  if (t.id === 'au-email') S.auth.email = t.value.trim();
+  if (t.id === 'dp-time') drawDepartPreview();
 });
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && sheetState) closeSheet();
@@ -1344,7 +1659,8 @@ document.addEventListener('keydown', (e) => {
   const t = e.target;
   if (t.matches('[data-geo-in]')) { e.preventDefault(); $(`[data-a="geo"][data-k="${t.dataset.geoIn}"]`)?.click(); }
   else if (t.id === 'p-addr') { e.preventDefault(); $('[data-a="p-search"]')?.click(); }
-  else if (t.id === 'w-token') { e.preventDefault(); $('[data-a="connect"]')?.click(); }
+  else if (t.id === 'np-pw') { e.preventDefault(); $('[data-a="np-save"]')?.click(); }
+  else if (t.id === 'del-confirm') { e.preventDefault(); $('[data-a="delete-account-go"]')?.click(); }
   else if (t.id === 'a-title') { e.preventDefault(); t.blur(); }
 });
 
@@ -1373,6 +1689,7 @@ async function importBackup(input) {
 
 // Diagramm: Antippen/Ziehen zeigt den Wert
 function mountHooks() {
+  drawDepartPreview();
   $$('.spark').forEach((c) => {
     const pts = JSON.parse(c.dataset.pts);
     const [x0, x1, W] = c.dataset.geo.split(',').map(Number);
@@ -1394,6 +1711,62 @@ function mountHooks() {
     svg.addEventListener('pointerup', () => setTimeout(hide, 1800));
   });
 }
+
+// ============================================================================
+// Sofort aktualisieren: nach Änderungen und durch Herunterziehen
+// ============================================================================
+// Holt frische Verkehrsprognosen für den Tag (Server begrenzt auf 1× in 3 min) und rechnet neu.
+async function refreshDay(date, { silent = true } = {}) {
+  try {
+    const r = await api('/refresh', { method: 'POST', body: { date } });
+    S.ov = await api('/overview');
+    if (!sheetState) rerenderKeepScroll();
+    if (!silent) toast(r.fetched ? 'Aktualisiert – mit frischen Verkehrsdaten' : 'Aktualisiert');
+    return true;
+  } catch (e) { if (!silent) toast(e.message, 'err'); return false; }
+}
+const ptrEl = () => $('#ptr');
+function setPtr(px, state = '') {
+  const el = ptrEl();
+  if (!el) return;
+  el.style.transform = `translate(-50%, ${px - 56}px)`;
+  el.style.opacity = px > 8 ? Math.min(1, px / 48) : 0;
+  el.className = state;
+  el.style.transition = px > 0 && state !== 'busy' ? 'none' : '';
+  $('svg', el)?.style.setProperty('transform', state === 'busy' ? '' : `rotate(${px * 3}deg)`);
+}
+let refreshing = false;
+async function pullRefresh(btn) {
+  if (refreshing || !S.ov) return;
+  refreshing = true;
+  btn?.classList.add('loading');
+  setPtr(64, 'busy');
+  await refreshDay(S.tab === 'tomorrow' ? S.ov.tomorrow : S.ov.today, { silent: false });
+  refreshing = false;
+  btn?.classList.remove('loading');
+  setPtr(0);
+}
+(function pullToRefresh() {
+  const TH = 64;
+  let y0 = null, pull = 0;
+  addEventListener('touchstart', (e) => {
+    y0 = !refreshing && !sheetState && S.ov && scrollY <= 0 && e.touches.length === 1 && !e.target.closest('input, select, textarea, .spark') ? e.touches[0].clientY : null;
+    pull = 0;
+  }, { passive: true });
+  addEventListener('touchmove', (e) => {
+    if (y0 == null) return;
+    const dy = e.touches[0].clientY - y0;
+    if (dy <= 0 || scrollY > 0) { pull = 0; setPtr(0); return; }
+    pull = Math.min(110, dy * 0.5);
+    setPtr(pull, pull >= TH ? 'ready' : '');
+  }, { passive: true });
+  addEventListener('touchend', () => {
+    if (y0 == null) return;
+    y0 = null;
+    if (pull >= TH) pullRefresh(); else setPtr(0);
+    pull = 0;
+  });
+})();
 
 // ============================================================================
 // Start: Zoom-/Markierschutz, Offline, Updates, Laden
@@ -1419,7 +1792,37 @@ if ('serviceWorker' in navigator && window.isSecureContext) {
   navigator.serviceWorker.addEventListener('controllerchange', () => { if (had) location.reload(); });
 }
 // Beim Zurückkehren und jede Minute frische Daten (ohne Springen der Ansicht)
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && conn().token && S.ov && !sheetState) load({ quiet: true }); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && authed() && S.ov && !sheetState) load({ quiet: true }); });
 setInterval(() => { if (document.visibilityState === 'visible' && S.ov && !sheetState && ['today', 'tomorrow'].includes(S.tab)) load({ quiet: true }); }, 60000);
 
-load();
+document.addEventListener('submit', (e) => {
+  if (e.target.id !== 'auth-form') return;
+  e.preventDefault();
+  authSubmit(e.target.querySelector('[type="submit"]'));
+});
+
+// Start: Anmeldung aus dem Link (Google / E-Mail-Bestätigung / Passwort zurücksetzen) übernehmen
+(async function start() {
+  const q = new URLSearchParams(location.search);
+  const h = new URLSearchParams(location.hash.slice(1));
+  const linkErr = q.get('error_description') || h.get('error_description');
+  const hadCode = q.has('code') || h.has('access_token');
+  let recovery = h.get('type') === 'recovery';
+  if (sb) {
+    sb.auth.onAuthStateChange((ev, session) => {
+      if (ev === 'PASSWORD_RECOVERY') recovery = true;
+      if (ev === 'SIGNED_OUT') S.session = null;
+      else if (session) S.session = session;
+    });
+    try { const { data } = await sb.auth.getSession(); S.session = data.session; } catch { S.session = null; }
+  }
+  if (hadCode || linkErr) history.replaceState(null, '', location.pathname);
+  S.auth.mode = store.get('wasLoggedIn') || conn().token ? 'login' : 'signup';
+  if (linkErr) S.auth.err = authMsg(linkErr.replace(/\+/g, ' '));
+  else if (hadCode && !S.session) { S.auth.mode = 'login'; S.auth.info = 'E-Mail bestätigt. Melde dich jetzt mit deinem Passwort an.'; }
+  if (S.session) {
+    store.set('wasLoggedIn', '1');
+    await afterLogin();
+    if (recovery) setTimeout(() => openNewPassword(true), 400);
+  } else load();
+})();

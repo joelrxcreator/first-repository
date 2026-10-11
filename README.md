@@ -43,6 +43,22 @@ Prognose-Abweichung. Am Tag selbst korrigiert die gemessene aktuelle Lage die n�
 
 Bis ein TomTom-Schlüssel eingetragen ist, läuft die App mit einem Demo-Verkehrsmodell.
 
+## Konto & Anmeldung
+
+- Registrieren und Anmelden mit E-Mail + Passwort oder mit Google (Supabase Auth).
+- Jedes Konto hat eigene Einstellungen, Termine, gelernte Fahrzeiten und Mitteilungen.
+- Daten aus der Zeit vor den Konten (alter Zugangsschlüssel) werden beim ersten Anmelden auf dem Gerät mit dem Schlüssel automatisch übernommen.
+- Unter Mehr → Konto: Passwort ändern, abmelden, Konto mit allen Daten löschen.
+
+Einmalig im Supabase-Dashboard: *Authentication → URL Configuration* → Site URL `https://joelrxcreator.github.io/first-repository/` (auch bei Redirect URLs eintragen). Für Google: in der Google Cloud Console einen OAuth-Client (Web) mit Redirect-URI `https://ntkooxdivapuznjufdwj.supabase.co/auth/v1/callback` anlegen und Client-ID/Secret unter *Authentication → Sign In / Providers → Google* eintragen. Der Google-Knopf erscheint in der App automatisch, sobald das eingeschaltet ist.
+
+## Eigene Abfahrtszeit & sofort aktualisieren
+
+- Auf „Morgen“ unter „Wann willst du los?“ eine Uhrzeit wählen: Die Fahrzeit erscheint sofort. „Für morgen festlegen“ plant den Tag mit genau dieser Abfahrt und zeigt den Vergleich zur besten Zeit.
+- Auch im Sheet „… anpassen“ gibt es „Losfahren um (optional)“.
+- Nach jeder Änderung holt die App sofort frische Verkehrsprognosen (höchstens alle 3 Minuten).
+- Ganz oben nach unten ziehen = aktualisieren (oder „Jetzt aktualisieren“ antippen).
+
 ## Technik (für später)
 
 ```

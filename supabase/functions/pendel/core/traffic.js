@@ -114,7 +114,7 @@ export function buildTravelModel({ observations, date, now, settings }) {
 
   const travel = (from, to, m) => pairModel(from, to).at(m).minutes;
   travel.info = (from, to) => pairModel(from, to).sources;
-  travel.curve = (from, to, startMin = 300, endMin = 1260, step = 10) => {
+  travel.curve = (from, to, startMin = 240, endMin = 1260, step = 10) => {
     const p = pairModel(from, to);
     const pts = [];
     for (let m = startMin; m <= endMin; m += step) pts.push([m, Math.round(p.at(m).minutes * 10) / 10]);

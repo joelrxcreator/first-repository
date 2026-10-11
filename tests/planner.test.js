@@ -108,3 +108,30 @@ test('Verpasste Pflichtveranstaltung: trotzdem Plan + Warnung', () => {
   const e = plan.scenarios[0].events.find((x) => x.id === 'a');
   assert.ok(e.attend === 'late', 'kommt so früh wie möglich nach');
 });
+
+test('Eigene Abfahrtszeit: erste Fahrt fest, Arbeit darf früher beginnen, Vergleich zum freien Plan', () => {
+  const s = withDefaults({ overrides: { [MON]: { departAt: '04:30' } } });
+  const day = buildDay(s, MON);
+  assert.equal(day.fixedDepart, 270);
+  const plan = planDay(day, demo(MON), s);
+  explainPlan(plan, s);
+  const best = plan.scenarios[0];
+  assert.equal(best.legs[0].depart, 270);
+  assert.ok(best.work.start >= best.legs[0].arrive && best.work.start < 360, 'Arbeit beginnt kurz nach Ankunft');
+  assert.equal(plan.fixedDepart.feasible, true);
+  assert.ok(plan.free && plan.free.leaveHome !== 270);
+  assert.equal(best.label, 'Deine Abfahrt');
+  assert.ok(best.freeText.startsWith('Ohne Vorgabe'));
+});
+
+test('Eigene Abfahrtszeit, die einen Pflichttermin verpasst → bester machbarer Plan mit Hinweis', () => {
+  const s = withDefaults({
+    work: { days: { 0: { hours: 0 } } },
+    study: [{ id: 'x', title: 'Klausur', weekday: 0, start: '08:00', end: '10:00', location: 'uni', kind: 'mandatory' }],
+    overrides: { [MON]: { departAt: '09:00' } },
+  });
+  const plan = planDay(buildDay(s, MON), demo(MON), s);
+  assert.equal(plan.fixedDepart.feasible, false);
+  assert.ok(plan.warnings[0].includes('09:00'));
+  assert.ok(plan.scenarios[0].legs[0].arrive <= 480);
+});

@@ -191,3 +191,20 @@ test('Abruf-Häufigkeit ist einstellbar und wird protokolliert; Tempo-Bremse wir
   assert.ok(times.length >= 3);
   for (let i = 1; i < times.length; i++) assert.ok(times[i] - times[i - 1] >= 190, `Abstand ${times[i] - times[i - 1]} ms`);
 });
+
+test('Sofort aktualisieren: holt Prognosen für den Tag, höchstens alle 3 Minuten', async () => {
+  const log = [];
+  const store = memoryStore({ settings: { locations: LOC, traffic: { tomtomKey: 'k' } } });
+  const app = createApp({ store, fetchImpl: fakeFetch(log), log: () => {}, throttleMs: 0 });
+  const now = zonedToUtc('2026-10-12', 600);
+  log.now = now;
+  const r1 = await app.refreshNow('2026-10-13', now);
+  assert.ok(r1.fetched > 0 && r1.fetched <= 60, `fetched ${r1.fetched}`);
+  assert.ok(r1.plan.scenarios.length);
+  const r2 = await app.refreshNow('2026-10-13', new Date(now.getTime() + 60000));
+  assert.equal(r2.skipped, 'recent');
+  assert.equal(r2.fetched, 0);
+  const act = await app.activity(now);
+  assert.ok(act.log.some((x) => x.kind === 'refresh'));
+  await assert.rejects(app.refreshNow('2020-01-01', now));
+});

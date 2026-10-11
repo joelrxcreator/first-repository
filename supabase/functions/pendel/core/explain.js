@@ -15,8 +15,14 @@ export function explainPlan(plan, settings) {
     s.steps = steps(s, settings);
     s.reasons = reasons(s, settings);
     if (s === best) {
-      s.label = 'Empfehlung';
+      s.label = plan.fixedDepart?.feasible ? 'Deine Abfahrt' : 'Empfehlung';
       s.diff = null;
+      const f = plan.free;
+      if (plan.fixedDepart?.feasible && f && f.leaveHome != null && f.leaveHome !== s.totals.leaveHome) {
+        const d = s.totals.commute - f.commute;
+        s.freeText = `Ohne Vorgabe: ${fmtHM(f.leaveHome)} los, ${fmtDur(f.commute)} Pendelzeit`
+          + (d ? ` (${d > 0 ? `${fmtDur(d)} weniger` : `${fmtDur(d)} mehr`} als mit deiner Abfahrt)` : '');
+      }
     } else {
       const d = {
         commute: s.totals.commute - best.totals.commute,

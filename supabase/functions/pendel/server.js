@@ -59,7 +59,8 @@ export function createApp({ store, fetchImpl = fetch, log = console.log, appUrl 
   }
 
   // ---- Verkehrsdaten holen ---------------------------------------------------
-  async function refreshTraffic(s, now, todayPlan, tomorrowPlan) {
+  // force = { date, plan }: sofort Prognosen für diesen Tag holen (Knopf / Ziehen zum Aktualisieren)
+  async function refreshTraffic(s, now, todayPlan, tomorrowPlan, force = null) {
     const prov = liveProvider(s);
     if (!prov) return 0;
     const lp = localParts(now);
@@ -91,7 +92,7 @@ export function createApp({ store, fetchImpl = fetch, log = console.log, appUrl 
     const nowMin = lp.minutes;
     const activeFrom = parseHM(T.activeFrom) ?? 300, activeTo = parseHM(T.activeTo) ?? 1320;
     const weekend = weekdayOf(lp.dateStr) >= 5;
-    if (nowMin >= activeFrom && nowMin <= activeTo) {
+    if (!force && nowMin >= activeFrom && nowMin <= activeTo) {
       const pairs = new Map();
       const upcoming = todayPlan?.scenarios?.[0]?.legs || [];
       for (const l of upcoming) pairs.set(`${l.from}>${l.to}`, l.depart >= nowMin - 15 && l.depart <= nowMin + 180);
@@ -117,19 +118,20 @@ export function createApp({ store, fetchImpl = fetch, log = console.log, appUrl 
     // b) Prognosen des Dienstes rund um die interessanten Abfahrtszeiten
     const evening = parseHM(s.notify.eveningTime) ?? 1200;
     const jobs = [];
-    const windows = (plan) => {
+    const windows = (plan, span = 120) => {
       const w = new Map();
       for (const sc of plan?.scenarios?.slice(0, 3) || []) for (const l of sc.legs) {
         const k = `${l.from}>${l.to}`;
         if (!w.has(k)) w.set(k, new Set());
-        for (let m = Math.round((l.depart - 120) / 15) * 15; m <= l.depart + 120; m += 15) w.get(k).add(m);
+        for (let m = Math.round((l.depart - span) / 15) * 15; m <= l.depart + span; m += 15) w.get(k).add(m);
       }
       return w;
     };
+    if (force) jobs.push({ kind: 'refresh', date: force.date, plan: force.plan, every: 0, from: force.date === lp.dateStr ? nowMin + 5 : 0, to: 1440, span: 60 });
     // heute: stündlich, nur die nächsten 5 Stunden
-    if (todayPlan && T.forecastTodayMin > 0) jobs.push({ kind: 'forecast-today', date: lp.dateStr, plan: todayPlan, every: T.forecastTodayMin, from: nowMin + 5, to: nowMin + 300 });
+    else if (todayPlan && T.forecastTodayMin > 0) jobs.push({ kind: 'forecast-today', date: lp.dateStr, plan: todayPlan, every: T.forecastTodayMin, from: nowMin + 5, to: nowMin + 300 });
     // morgen: mittags und/oder vor der Abendnachricht
-    if (tomorrowPlan && T.tomorrowRuns > 0) {
+    if (!force && tomorrowPlan && T.tomorrowRuns > 0) {
       const lastT = await store.lastForecastFetch(addDays(lp.dateStr, 1));
       const lastMin = lastT ? minutesOn(lp.dateStr, new Date(lastT)) : -Infinity;
       const midday = T.tomorrowRuns >= 2 && nowMin >= 720 && lastMin < 0;
@@ -137,7 +139,7 @@ export function createApp({ store, fetchImpl = fetch, log = console.log, appUrl 
       if (midday || eveningRun) jobs.push({ kind: 'forecast-tomorrow', date: addDays(lp.dateStr, 1), plan: tomorrowPlan, every: 0, from: 0, to: 1440 });
     }
     for (const job of jobs) {
-      for (const [p, mins] of windows(job.plan)) {
+      for (const [p, mins] of windows(job.plan, job.span)) {
         const [a, b] = p.split('>');
         if (!hasCoords(s, a) || !hasCoords(s, b)) continue;
         if (job.every) {
@@ -145,7 +147,7 @@ export function createApp({ store, fetchImpl = fetch, log = console.log, appUrl 
           if (last && now - new Date(last) < job.every * 60000 - 60000) continue;
         }
         for (const m of [...mins].sort((x, y) => x - y)) {
-          if (m < job.from || m > job.to || m < 270 || m > 1410) continue;
+          if (m < job.from || m > job.to || m < 240 || m > 1410) continue;
           const dep = zonedToUtc(job.date, m);
           if (dep.getTime() < now.getTime() + 2 * 60000) continue;
           const v = await call(job.kind, a, b, dep);
@@ -163,6 +165,27 @@ export function createApp({ store, fetchImpl = fetch, log = console.log, appUrl 
       await store.addFetchLog({ ts: now.toISOString(), kind: 'limit', calls: 0, failed: 0, note: `Tageslimit von ${limit} Abfragen erreicht` });
     }
     return rows.length;
+  }
+
+  const REFRESH_GAP = 3 * 60000;
+  /** Sofort neu rechnen und – höchstens alle 3 Minuten – frische Prognosen für den Tag holen. */
+  async function refreshNow(date, now = new Date()) {
+    const s = await settings();
+    const lp = localParts(now);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '') || date < lp.dateStr || date > addDays(lp.dateStr, 14)) throw new Error('Ungültiges Datum');
+    let plan = await computeDay(s, date, now);
+    let fetched = 0, skipped = null;
+    if (!liveProvider(s)) skipped = 'demo';
+    else {
+      const last = (await store.getFetchLog(new Date(now.getTime() - REFRESH_GAP).toISOString())).find((x) => x.kind === 'refresh');
+      if (last) skipped = 'recent';
+      else {
+        fetched = await refreshTraffic(s, now, null, null, { date, plan });
+        if (fetched) plan = await computeDay(s, date, now);
+      }
+    }
+    await store.savePlan(date, date === lp.dateStr ? 'live' : 'dayahead', plan);
+    return { plan, fetched, skipped };
   }
 
   // ---- Annahme: Empfehlung wurde befolgt (korrigierbar in der App) ------------
@@ -379,7 +402,7 @@ export function createApp({ store, fetchImpl = fetch, log = console.log, appUrl 
     return s;
   }
 
-  return { tick, overview, planFor, setState, stats, geocode, testNotification, settings, saveSettings, pushKey, pushSubscribe, pushUnsubscribe, activity };
+  return { tick, overview, planFor, refreshNow, setState, stats, geocode, testNotification, settings, saveSettings, pushKey, pushSubscribe, pushUnsubscribe, activity };
 }
 
 const round1 = (v) => Math.round(v * 10) / 10;
