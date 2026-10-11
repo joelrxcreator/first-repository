@@ -6,10 +6,14 @@ import { explainPlan } from './core/explain.js';
 import { decideNotifications } from './core/notify.js';
 import { localParts, addDays, zonedToUtc, minutesOn, parseHM, weekdayOf } from './core/time.js';
 import { tomtomProvider, tomtomGeocode, sendNtfy } from './providers.js';
+import { generateVapidKeys, sendWebPush } from './webpush.js';
 
 const DAY = 86400000;
 
-export function createApp({ store, fetchImpl = fetch, log = console.log, appUrl = '' }) {
+const DEFAULT_SUBJECT = 'https://joelrxcreator.github.io/first-repository/';
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+export function createApp({ store, fetchImpl = fetch, log = console.log, appUrl = '', throttleMs = 260 }) {
   async function settings() {
     return withDefaults(await store.getSettings());
   }
@@ -64,29 +68,44 @@ export function createApp({ store, fetchImpl = fetch, log = console.log, appUrl 
     const limit = s.traffic.apiDailyLimit || 2000;
     let calls = 0;
     const rows = [];
+    const T = s.traffic;
     const budget = () => used + calls < limit;
-    const call = async (from, to, depart) => {
-      if (!budget()) return null;
+    const stats = {}; // je Art: Abrufe, Fehler, letzter Fehler
+    let lastCall = 0, budgetHit = false;
+    const call = async (kind, from, to, depart) => {
+      if (!budget()) { budgetHit = true; return null; }
+      const wait = lastCall + throttleMs - Date.now(); // TomTom erlaubt nur wenige Abfragen pro Sekunde
+      if (wait > 0) await sleep(wait);
+      lastCall = Date.now();
       calls++;
-      try { return await prov.route(from, to, depart); } catch (e) { log(`Verkehrsabfrage fehlgeschlagen: ${e.message}`); return null; }
+      const st = (stats[kind] ||= { calls: 0, failed: 0, error: '' });
+      st.calls++;
+      try { return await prov.route(from, to, depart); } catch (e) {
+        st.failed++; st.error = e.message.slice(0, 160);
+        log(`Verkehrsabfrage fehlgeschlagen: ${e.message}`);
+        return null;
+      }
     };
 
     // a) Live-Messungen (Lernen + Korrektur der Prognose)
     const nowMin = lp.minutes;
-    if (nowMin >= 300 && nowMin <= 1320) {
+    const activeFrom = parseHM(T.activeFrom) ?? 300, activeTo = parseHM(T.activeTo) ?? 1320;
+    const weekend = weekdayOf(lp.dateStr) >= 5;
+    if (nowMin >= activeFrom && nowMin <= activeTo) {
       const pairs = new Map();
       const upcoming = todayPlan?.scenarios?.[0]?.legs || [];
       for (const l of upcoming) pairs.set(`${l.from}>${l.to}`, l.depart >= nowMin - 15 && l.depart <= nowMin + 180);
       const wl = todayPlan?.day?.work?.location || s.work.location;
-      if (weekdayOf(lp.dateStr) <= 4) for (const p of [`home>${wl}`, `${wl}>home`]) if (!pairs.has(p)) pairs.set(p, false);
+      if (T.liveIdleMin > 0 && (!weekend || T.learnWeekends)) for (const p of [`home>${wl}`, `${wl}>home`]) if (!pairs.has(p)) pairs.set(p, false);
       const dayahead = await store.getPlan(lp.dateStr, 'dayahead');
       for (const [p, hot] of pairs) {
         const [a, b] = p.split('>');
         if (!hasCoords(s, a) || !hasCoords(s, b)) continue;
+        const every = hot ? Math.max(5, T.liveHotMin || 5) : T.liveIdleMin;
+        if (!every) continue;
         const last = await store.lastFetched(a, b, 'live');
-        const interval = (hot ? 5 : 15) * 60000 - 60000;
-        if (last && now - new Date(last) < interval) continue;
-        const m = await call(a, b, 'now');
+        if (last && now - new Date(last) < every * 60000 - 60000) continue;
+        const m = await call('live', a, b, 'now');
         if (m == null) continue;
         const ref = await store.findForecast(a, b, now.toISOString(), new Date(now.getTime() - 3 * 3600000).toISOString());
         const curve = dayahead?.curves?.[p]?.points;
@@ -108,13 +127,14 @@ export function createApp({ store, fetchImpl = fetch, log = console.log, appUrl 
       return w;
     };
     // heute: stündlich, nur die nächsten 5 Stunden
-    if (todayPlan) jobs.push({ date: lp.dateStr, plan: todayPlan, every: 60, from: nowMin + 5, to: nowMin + 300 });
-    // morgen: einmal mittags, einmal vor der Abendnachricht
-    if (tomorrowPlan) {
+    if (todayPlan && T.forecastTodayMin > 0) jobs.push({ kind: 'forecast-today', date: lp.dateStr, plan: todayPlan, every: T.forecastTodayMin, from: nowMin + 5, to: nowMin + 300 });
+    // morgen: mittags und/oder vor der Abendnachricht
+    if (tomorrowPlan && T.tomorrowRuns > 0) {
       const lastT = await store.lastForecastFetch(addDays(lp.dateStr, 1));
       const lastMin = lastT ? minutesOn(lp.dateStr, new Date(lastT)) : -Infinity;
-      const due = (nowMin >= 720 && lastMin < 0) || (nowMin >= evening - 60 && lastMin < evening - 60);
-      if (due) jobs.push({ date: addDays(lp.dateStr, 1), plan: tomorrowPlan, every: 0, from: 0, to: 1440 });
+      const midday = T.tomorrowRuns >= 2 && nowMin >= 720 && lastMin < 0;
+      const eveningRun = nowMin >= evening - 60 && lastMin < evening - 60;
+      if (midday || eveningRun) jobs.push({ kind: 'forecast-tomorrow', date: addDays(lp.dateStr, 1), plan: tomorrowPlan, every: 0, from: 0, to: 1440 });
     }
     for (const job of jobs) {
       for (const [p, mins] of windows(job.plan)) {
@@ -128,7 +148,7 @@ export function createApp({ store, fetchImpl = fetch, log = console.log, appUrl 
           if (m < job.from || m > job.to || m < 270 || m > 1410) continue;
           const dep = zonedToUtc(job.date, m);
           if (dep.getTime() < now.getTime() + 2 * 60000) continue;
-          const v = await call(a, b, dep);
+          const v = await call(job.kind, a, b, dep);
           if (v == null) continue;
           rows.push({ origin: a, dest: b, depart_at: dep.toISOString(), fetched_at: now.toISOString(), minutes: round1(v), source: 'forecast' });
         }
@@ -136,6 +156,12 @@ export function createApp({ store, fetchImpl = fetch, log = console.log, appUrl 
     }
     if (rows.length) await store.addObservations(rows);
     if (calls) await store.addUsage(usageDay, calls);
+    for (const [kind, st] of Object.entries(stats)) {
+      await store.addFetchLog({ ts: now.toISOString(), kind, calls: st.calls, failed: st.failed, note: st.error || null });
+    }
+    if (budgetHit && !(await store.getFetchLog(now.toISOString().slice(0, 10))).some((x) => x.kind === 'limit')) {
+      await store.addFetchLog({ ts: now.toISOString(), kind: 'limit', calls: 0, failed: 0, note: `Tageslimit von ${limit} Abfragen erreicht` });
+    }
     return rows.length;
   }
 
@@ -169,6 +195,39 @@ export function createApp({ store, fetchImpl = fetch, log = console.log, appUrl 
     return true;
   }
 
+  // ---- Benachrichtigungen zustellen: direkt aufs Handy (Web Push) und/oder ntfy ----
+  async function vapidKeys() {
+    let v = await store.getVapid();
+    if (!v) { v = await generateVapidKeys(); await store.saveVapid(v); }
+    return v;
+  }
+
+  async function deliver(s, msg, now) {
+    const results = [];
+    const subs = await store.listPushSubs();
+    if (subs.length) {
+      const vapid = await vapidKeys();
+      for (const sub of subs) {
+        try {
+          const r = await sendWebPush(sub, { title: msg.title, body: msg.message, url: appUrl || DEFAULT_SUBJECT, tag: msg.key?.split(':').slice(0, 2).join(':') },
+            vapid, { subject: appUrl || DEFAULT_SUBJECT, urgency: msg.priority >= 4 ? 'high' : 'normal', fetchImpl });
+          if (r.gone) await store.deletePushSub(sub.endpoint);
+          results.push({ channel: 'push', ok: r.ok, error: r.ok ? null : r.gone ? 'Abo abgelaufen – auf dem Handy neu erlauben' : `Push-Dienst ${r.status}` });
+        } catch (e) { results.push({ channel: 'push', ok: false, error: e.message }); }
+      }
+    }
+    if (s.notify.ntfyTopic) {
+      try {
+        await sendNtfy(s.notify.ntfyTopic, { ...msg, click: appUrl || undefined }, fetchImpl, s.notify.ntfyToken);
+        results.push({ channel: 'ntfy', ok: true });
+      } catch (e) { results.push({ channel: 'ntfy', ok: false, error: e.message }); }
+    }
+    for (const r of results.filter((x) => !x.ok)) {
+      await store.addFetchLog({ ts: now.toISOString(), kind: `notify-${r.channel}`, calls: 1, failed: 1, note: `${msg.title}: ${r.error}`.slice(0, 200) });
+    }
+    return results;
+  }
+
   async function tick(now = new Date()) {
     const s = await settings();
     const lp = localParts(now);
@@ -189,15 +248,14 @@ export function createApp({ store, fetchImpl = fetch, log = console.log, appUrl 
     const sent = await store.getSent(today);
     const decisions = decideNotifications({ nowMin: lp.minutes, today, tomorrow, todayPlan, tomorrowPlan, settings: s, sent });
     const delivered = [];
-    // Ohne ntfy-Thema nichts als verschickt markieren, sonst fehlen später die ersten echten Nachrichten.
-    for (const d of s.notify.ntfyTopic ? decisions : []) {
-      try {
-        await sendNtfy(s.notify.ntfyTopic, { ...d, click: appUrl || undefined }, fetchImpl);
+    // Nur als verschickt markieren, wenn mindestens ein Weg geklappt hat – sonst nächster Versuch beim nächsten Takt.
+    const hasChannel = s.notify.ntfyTopic || (await store.listPushSubs()).length;
+    for (const d of hasChannel ? decisions : []) {
+      const res = await deliver(s, d, now);
+      if (res.some((r) => r.ok)) {
         await store.addSent({ key: d.key, date: d.payload?.date || today, title: d.title, message: d.message, payload: d.payload, ts: now.toISOString() });
         delivered.push(d.title);
-      } catch (e) {
-        log(`Benachrichtigung fehlgeschlagen: ${e.message}`);
-      }
+      } else log(`Benachrichtigung fehlgeschlagen: ${res.map((r) => r.error).join('; ')}`);
     }
     return { ok: true, today, fetched, advanced, notifications: delivered };
   }
@@ -215,6 +273,7 @@ export function createApp({ store, fetchImpl = fetch, log = console.log, appUrl 
       notifications: sent.slice(-15).reverse(),
       usage: await store.getUsage(today),
       provider: liveProvider(s) ? 'tomtom' : 'demo',
+      pushDevices: (await store.listPushSubs()).length,
     };
   }
 
@@ -286,11 +345,32 @@ export function createApp({ store, fetchImpl = fetch, log = console.log, appUrl 
     return tomtomGeocode(s.traffic.tomtomKey, q, fetchImpl);
   }
 
-  async function testNotification() {
+  async function testNotification(now = new Date()) {
     const s = await settings();
-    if (!s.notify.ntfyTopic) throw new Error('Kein ntfy-Thema eingetragen.');
-    await sendNtfy(s.notify.ntfyTopic, { title: 'Pendelplaner: Test', message: 'Benachrichtigungen funktionieren 👍', click: appUrl || undefined }, fetchImpl);
-    return { ok: true };
+    const res = await deliver(s, { key: 'test', title: 'Pendelpilot: Test', message: 'Benachrichtigungen funktionieren 👍', priority: 3 }, now);
+    if (!res.length) throw new Error('Noch kein Weg eingerichtet – erlaube Mitteilungen auf dem Handy oder trage ein ntfy-Thema ein.');
+    if (!res.some((r) => r.ok)) throw new Error(res.map((r) => r.error).join(' · '));
+    return { ok: true, results: res };
+  }
+
+  async function pushKey() { return { publicKey: (await vapidKeys()).publicKey }; }
+  async function pushSubscribe(body, now = new Date()) {
+    const sub = body?.subscription;
+    if (!sub?.endpoint || !sub?.keys?.p256dh || !sub?.keys?.auth) throw new Error('Ungültiges Abo');
+    if (!/^https:\/\//.test(sub.endpoint)) throw new Error('Ungültiger Push-Endpunkt');
+    await store.addPushSub({ endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth }, label: String(body.label || '').slice(0, 60), created: now.toISOString() });
+    return { ok: true, devices: (await store.listPushSubs()).length };
+  }
+  async function pushUnsubscribe(body) {
+    if (body?.endpoint) await store.deletePushSub(body.endpoint);
+    return { ok: true, devices: (await store.listPushSubs()).length };
+  }
+
+  async function activity(now = new Date()) {
+    const lp = localParts(now);
+    const days = [];
+    for (let i = 6; i >= 0; i--) { const d = addDays(lp.dateStr, -i); days.push({ day: d, calls: await store.getUsage(d) }); }
+    return { log: await store.getFetchLog(new Date(now.getTime() - 3 * DAY).toISOString()), days, limit: (await settings()).traffic.apiDailyLimit };
   }
 
   async function saveSettings(body) {
@@ -299,7 +379,7 @@ export function createApp({ store, fetchImpl = fetch, log = console.log, appUrl 
     return s;
   }
 
-  return { tick, overview, planFor, setState, stats, geocode, testNotification, settings, saveSettings };
+  return { tick, overview, planFor, setState, stats, geocode, testNotification, settings, saveSettings, pushKey, pushSubscribe, pushUnsubscribe, activity };
 }
 
 const round1 = (v) => Math.round(v * 10) / 10;

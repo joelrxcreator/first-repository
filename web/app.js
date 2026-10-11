@@ -41,6 +41,49 @@ const store = {
 const LOGO = 'apple-touch-icon.png';
 
 // ============================================================================
+// Mitteilungen direkt aufs Handy (Web Push)
+// ============================================================================
+const b64uToBytes = (str) => { const s = atob(str.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((str.length + 3) % 4)); return Uint8Array.from(s, (c) => c.charCodeAt(0)); };
+function pushInfo() {
+  const supported = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window && window.isSecureContext;
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const standalone = navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
+  return { supported, ios, standalone, needsInstall: ios && !standalone, permission: 'Notification' in window ? Notification.permission : 'unsupported' };
+}
+let pushSub = null; // Abo dieses Geräts
+async function refreshPushSub() {
+  try { const reg = await navigator.serviceWorker?.getRegistration(); pushSub = reg ? await reg.pushManager.getSubscription() : null; } catch { pushSub = null; }
+}
+async function enablePush(b) {
+  const info = pushInfo();
+  if (info.needsInstall) { toast('Öffne den Pendelpilot vom Home-Bildschirm aus', 'err'); return false; }
+  if (!info.supported) { toast('Dieser Browser kann keine Mitteilungen empfangen', 'err'); return false; }
+  b?.classList.add('loading');
+  try {
+    const perm = await Notification.requestPermission(); // muss direkt auf den Tipp folgen
+    if (perm !== 'granted') throw new Error(perm === 'denied' ? 'Mitteilungen sind blockiert – in den iPhone-Einstellungen erlauben' : 'Mitteilungen wurden nicht erlaubt');
+    const reg = await navigator.serviceWorker.ready;
+    const { publicKey } = await api('/push/key');
+    const sub = (await reg.pushManager.getSubscription()) || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToBytes(publicKey) });
+    await api('/push/subscribe', { method: 'POST', body: { subscription: sub.toJSON(), label: info.ios ? 'iPhone' : 'Gerät' } });
+    pushSub = sub;
+    S.ov = await api('/overview');
+    toast('Mitteilungen sind an');
+    return true;
+  } catch (e) { toast(e.message, 'err'); return false; } finally { b?.classList.remove('loading'); }
+}
+async function disablePush(b) {
+  b?.classList.add('loading');
+  try {
+    if (pushSub) { await api('/push/unsubscribe', { method: 'POST', body: { endpoint: pushSub.endpoint } }); await pushSub.unsubscribe().catch(() => {}); }
+    pushSub = null;
+    S.ov = await api('/overview');
+    toast('Mitteilungen auf diesem Gerät aus');
+  } catch (e) { toast(e.message, 'err'); } finally { b?.classList.remove('loading'); }
+}
+const notifyActive = () => (S.ov?.pushDevices || 0) > 0 || !!S.settings?.notify?.ntfyTopic;
+
+// ============================================================================
 // Hell / Dunkel
 // ============================================================================
 const theme = () => store.get('theme') || 'auto';
@@ -303,7 +346,7 @@ function setupSteps() {
   return [
     { key: 'traffic', done: !!s.traffic?.tomtomKey, title: 'Verkehrsdaten verbinden' },
     { key: 'places', done: found('home') && found(s.work?.location || 'work'), title: 'Zuhause & Arbeit eintragen' },
-    { key: 'notify', done: !!s.notify?.ntfyTopic, title: 'Benachrichtigungen aktivieren' },
+    { key: 'notify', done: (S.ov?.pushDevices || 0) > 0 || !!s.notify?.ntfyTopic, title: 'Benachrichtigungen aktivieren' },
     { key: 'week', done: !!s.planReviewed || (s.study || []).length > 0, title: 'Arbeitszeiten prüfen' },
   ];
 }
@@ -337,13 +380,14 @@ function drawWizard() {
       ${!s.traffic.tomtomKey ? `<div class="note warn">${icon('info')}<div class="grow callout">Die Adresssuche braucht den TomTom-Schlüssel aus Schritt 1.</div></div>` : ''}
       ${pl('home', 'Zuhause')}${pl(s.work.location || 'work', 'Arbeit')}${s.locations.uni ? pl('uni', 'Uni (optional)') : ''}`;
   } else if (st.key === 'notify') {
-    const topic = s.notify.ntfyTopic;
-    body = `<p class="lead">Die App schickt dir Hinweise wie „In 15 Minuten losfahren“ über die kostenlose App <b>ntfy</b>.</p>
-      <div style="display:flex;gap:8px;margin-bottom:16px">
-        <a class="btn block" href="https://apps.apple.com/app/ntfy/id1625396347" target="_blank" rel="noopener">${icon('smartphone')}iPhone</a>
-        <a class="btn block" href="https://play.google.com/store/apps/details?id=io.heckel.ntfy" target="_blank" rel="noopener">${icon('smartphone')}Android</a></div>
-      ${topic ? `<p class="callout t-2" style="margin-bottom:8px">In ntfy auf „+“ tippen und dieses Thema abonnieren:</p><div class="topic selectable">${esc(topic)}</div><div style="display:flex;gap:8px;margin-top:8px"><button type="button" class="btn tinted block" data-a="copy-topic">${icon('copy')}Kopieren</button><button type="button" class="btn block" data-a="test-push">${icon('send')}Test senden</button></div>`
-        : `<p class="callout t-2" style="margin-bottom:8px">Dann hier dein persönliches Thema erzeugen:</p><button type="button" class="btn tinted block" data-a="new-topic">${icon('sparkles')}Thema erzeugen</button>`}`;
+    const info = pushInfo();
+    const on = !!pushSub;
+    body = `<p class="lead">Die App meldet sich rechtzeitig, z. B. „In 15 Minuten losfahren“ – nie mitten in einer Vorlesung.</p>
+      ${on ? `<div class="note">${icon('circle-check')}<div class="grow"><b>Mitteilungen sind an.</b><div class="callout t-2">Tippe auf „Test senden“, um es auszuprobieren.</div><button type="button" class="btn tinted" data-a="test-push">${icon('send')}Test senden</button></div></div>`
+        : info.needsInstall ? `<div class="note warn">${icon('smartphone')}<div class="grow">Mitteilungen gehen nur, wenn du den Pendelpilot <b>vom Home-Bildschirm</b> öffnest (Safari → Teilen → „Zum Home-Bildschirm“).</div></div>`
+        : info.permission === 'denied' ? `<div class="note warn">${icon('bell')}<div class="grow">Mitteilungen sind blockiert. Erlaube sie unter <b>Einstellungen → Mitteilungen → Pendelpilot</b>.</div></div>`
+        : info.supported ? `<button type="button" class="btn primary lg block" data-a="push-on">${icon('bell')}Mitteilungen erlauben</button><p class="gfoot" style="margin-top:8px">Dein Handy fragt gleich nach – tippe auf „Erlauben“.</p>`
+        : `<div class="note warn">${icon('info')}<div class="grow">Dieser Browser kann keine Mitteilungen empfangen. Unter Mehr → Benachrichtigungen kannst du stattdessen die App ntfy nutzen.</div></div>`}`;
   } else {
     const d = s.work.days;
     body = `<p class="lead">Wie viele Stunden arbeitest du an welchem Tag? Die Pause rechnet die App selbst dazu.</p>
@@ -719,12 +763,13 @@ function viewMore() {
   const open = setupSteps().filter((x) => !x.done).length;
   const nLoc = Object.values(s.locations).filter((l) => l.lat != null).length;
   return `<div class="view">${ph('Mehr')}
-    <div class="profile"><img class="logo" src="${LOGO}" alt=""><div style="min-width:0"><b>Pendelpilot</b><span>${S.ov.provider === 'tomtom' ? 'Live-Verkehr aktiv' : 'Demo-Verkehr'} · Benachrichtigungen ${s.notify.ntfyTopic ? 'an' : 'aus'}</span></div></div>
+    <div class="profile"><img class="logo" src="${LOGO}" alt=""><div style="min-width:0"><b>Pendelpilot</b><span>${S.ov.provider === 'tomtom' ? 'Live-Verkehr aktiv' : 'Demo-Verkehr'} · Benachrichtigungen ${notifyActive() ? 'an' : 'aus'}</span></div></div>
     ${open ? group([row({ title: 'Einrichtung abschließen', desc: `${4 - open} von 4 erledigt`, tile: 'sparkles', action: 'wizard' })], { icons: true }) + '<div style="height:24px"></div>' : ''}
     ${group([
       row({ title: 'Verkehrsdaten', tile: 'navigation', val: s.traffic.tomtomKey ? 'Verbunden' : 'Fehlt', valCls: s.traffic.tomtomKey ? 'ok' : 'todo', action: 'sub', data: 'data-sub="traffic"' }),
       row({ title: 'Orte', tile: 'map-pin', tileCls: 'red', val: `${nLoc} ${nLoc === 1 ? 'Ort' : 'Orte'}`, action: 'sub', data: 'data-sub="places"' }),
-      row({ title: 'Benachrichtigungen', tile: 'bell', tileCls: 'orange', val: s.notify.ntfyTopic ? 'An' : 'Aus', valCls: s.notify.ntfyTopic ? 'ok' : 'todo', action: 'sub', data: 'data-sub="notify"' }),
+      row({ title: 'Benachrichtigungen', tile: 'bell', tileCls: 'orange', val: notifyActive() ? 'An' : 'Aus', valCls: notifyActive() ? 'ok' : 'todo', action: 'sub', data: 'data-sub="notify"' }),
+      row({ title: 'Datenabrufe', tile: 'rotate-cw', tileCls: 'green', val: `${S.ov.usage} heute`, action: 'sub', data: 'data-sub="fetch"' }),
     ], { icons: true })}
     <div style="height:24px"></div>
     ${group([
@@ -741,6 +786,29 @@ function viewMore() {
   </div>`;
 }
 
+const fmtWhen = (iso) => {
+  const d = new Date(iso);
+  const day = new Intl.DateTimeFormat('de-DE', { timeZone: 'Europe/Berlin', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d).split('.').reverse().join('-');
+  const t = hm(minOfIso(iso));
+  if (day === S.ov.today) return t;
+  return `${WDS[wdOf(day)]} ${t}`;
+};
+// Grobe Schätzung der Abfragen an einem Arbeitstag (2 Strecken: hin und zurück)
+function estimateCalls(T) {
+  const active = Math.max(0, (parseHM(T.activeTo) - parseHM(T.activeFrom)) / 60);
+  const hot = 2 * (180 / Math.max(5, T.liveHotMin || 5));
+  const idle = T.liveIdleMin ? Math.max(0, (active * 60) / T.liveIdleMin * 2 - 2 * (180 / T.liveIdleMin)) : 0;
+  const today = T.forecastTodayMin ? Math.min(active, 12) * 60 / T.forecastTodayMin * 10 : 0;
+  const tomorrow = (Number(T.tomorrowRuns) || 0) * 34;
+  return Math.round((hot + idle + today + tomorrow) / 10) * 10;
+}
+async function loadActivity() {
+  if (loadActivity.busy) return;
+  loadActivity.busy = true;
+  try { S.activity = await api('/activity'); } catch (e) { S.activity = { log: [], days: [], error: e.message }; }
+  loadActivity.busy = false;
+  if (S.tab === 'more' && ['fetch', 'notify'].includes(S.sub)) rerenderKeepScroll();
+}
 const level = (v, max) => { const r = v / max; return r < 0.15 ? 'unwichtig' : r < 0.4 ? 'etwas' : r < 0.65 ? 'mittel' : r < 0.85 ? 'wichtig' : 'sehr wichtig'; };
 const SUBS = {
   traffic() {
@@ -753,8 +821,8 @@ const SUBS = {
       <div style="height:24px"></div>
       ${group([
         field('Quelle', `<select id="f-prov"><option value="tomtom" ${t.provider !== 'demo' ? 'selected' : ''}>TomTom (empfohlen)</option><option value="demo" ${t.provider === 'demo' ? 'selected' : ''}>Demo-Modell</option></select>`),
-        field('Höchstens Abfragen pro Tag', `<input id="f-limit" type="number" inputmode="numeric" value="${t.apiDailyLimit}">`, { hint: `Heute verbraucht: ${S.ov.usage}` }),
-      ], { title: 'Erweitert' })}</div>`;
+      ], { title: 'Erweitert' })}
+      <div style="height:24px"></div>${group([row({ title: 'Datenabrufe & Tageslimit', desc: `Heute ${S.ov.usage} von ${t.apiDailyLimit} Abfragen`, action: 'sub', data: 'data-sub="fetch"' })])}</div>`;
   },
   places() {
     const s = S.settings;
@@ -766,20 +834,80 @@ const SUBS = {
   },
   notify() {
     const n = S.settings.notify;
-    setDock(n.ntfyTopic ? `<button type="button" class="btn primary lg block" data-a="test-push">${icon('send')}Test senden</button>` : `<button type="button" class="btn primary lg block" data-a="new-topic">${icon('sparkles')}Benachrichtigungen einrichten</button>`);
+    const info = pushInfo();
+    const on = !!pushSub;
+    const devices = S.ov.pushDevices || 0;
+    setDock(on || n.ntfyTopic ? `<button type="button" class="btn primary lg block" data-a="test-push">${icon('send')}Test senden</button>`
+      : info.supported && !info.needsInstall && info.permission !== 'denied' ? `<button type="button" class="btn primary lg block" data-a="push-on">${icon('bell')}Mitteilungen erlauben</button>` : '');
+    const status = on ? row({ title: 'Mitteilungen auf diesem Gerät', tile: 'smartphone', tileCls: 'green', val: 'An', valCls: 'ok', chev: false })
+      : info.needsInstall ? `<div class="note warn" style="border-radius:0">${icon('smartphone')}<div class="grow callout">Mitteilungen gehen nur, wenn du den Pendelpilot <b>vom Home-Bildschirm</b> öffnest.</div></div>`
+      : info.permission === 'denied' ? `<div class="note warn" style="border-radius:0">${icon('bell')}<div class="grow callout">Blockiert. Erlaube sie unter <b>Einstellungen → Mitteilungen → Pendelpilot</b> und öffne die App neu.</div></div>`
+      : !info.supported ? `<div class="note" style="border-radius:0">${icon('info')}<div class="grow callout">Dieser Browser kann keine Mitteilungen empfangen – nutze unten ntfy.</div></div>`
+      : row({ title: 'Mitteilungen auf diesem Gerät', tile: 'smartphone', tileCls: 'gray', val: 'Aus', valCls: 'todo', chev: false });
+    const problems = (S.activity?.log || []).filter((x) => x.kind.startsWith('notify-')).slice(0, 3);
     const hist = S.ov.notifications || [];
+    if (!S.activity) loadActivity();
     return `<div class="view">${back()}${ph('Benachrichtigungen')}
-      ${n.ntfyTopic ? group([`<div class="field"><span>Dein Thema in der App ntfy</span><div class="topic selectable">${esc(n.ntfyTopic)}</div></div>`, row({ title: 'Thema kopieren', tile: 'copy', action: 'copy-topic', chev: false }), row({ title: 'Neues Thema erzeugen', desc: 'Danach in ntfy neu abonnieren', tile: 'rotate-cw', tileCls: 'gray', action: 'new-topic', chev: false })], { icons: true, title: 'Verbindung' })
-        : `<p class="callout t-2" style="margin:-8px 0 16px">Installiere die kostenlose App <b>ntfy</b>, tippe dann unten auf „einrichten“ und abonniere das angezeigte Thema.</p>
-          <div style="display:flex;gap:8px"><a class="btn block" href="https://apps.apple.com/app/ntfy/id1625396347" target="_blank" rel="noopener">${icon('smartphone')}iPhone</a><a class="btn block" href="https://play.google.com/store/apps/details?id=io.heckel.ntfy" target="_blank" rel="noopener">${icon('smartphone')}Android</a></div>`}
+      <p class="callout t-2" style="margin:-8px 0 20px">Direkt aufs Handy – ohne Zusatz-App. Die App meldet sich am Vorabend, wenn sich die beste Zeit ändert und kurz vor der Abfahrt.</p>
+      ${group([status, ...(on ? [row({ title: 'Auf diesem Gerät ausschalten', action: 'push-off', chev: false, cls: 'danger' })] : [])], { title: 'Direkt aufs Handy', foot: devices > (on ? 1 : 0) ? `Auch auf ${devices - (on ? 1 : 0)} weiteren Gerät(en) aktiv.` : '' })}
+      ${problems.length ? `<div style="height:16px"></div><div class="notes">${problems.map((x) => `<div class="note error">${icon('triangle-alert')}<div class="grow callout"><b>${fmtWhen(x.ts)}</b> · ${esc(x.note)}</div></div>`).join('')}</div>` : ''}
       <div style="height:24px"></div>
       ${group([`<div class="fgrid">
         ${field('Vorabend-Prognose', `<input type="time" data-nf="eveningTime" value="${esc(n.eveningTime)}">`)}
-        ${field('Losfahr-Hinweis', `<select data-nf="leadMin">${[5, 10, 15, 20, 30].map((v) => `<option value="${v}" ${Number(n.leadMin) === v ? 'selected' : ''}>${v} min vorher</option>`).join('')}</select>`)}
+        ${field('Losfahr-Hinweis vorher', `<select data-nf="leadMin">${[5, 10, 15, 20, 30].map((v) => `<option value="${v}" ${Number(n.leadMin) === v ? 'selected' : ''}>${v} min</option>`).join('')}</select>`)}
         ${field('Ruhe ab', `<input type="time" data-nf="quietStart" value="${esc(n.quietStart)}">`)}
         ${field('Ruhe bis', `<input type="time" data-nf="quietEnd" value="${esc(n.quietEnd)}">`)}</div>`,
         field('Melden, wenn sich die beste Zeit verschiebt um', `<select data-nf="changeThresholdMin">${[3, 5, 10, 15].map((v) => `<option value="${v}" ${Number(n.changeThresholdMin) === v ? 'selected' : ''}>mindestens ${v} min</option>`).join('')}</select>`)], { title: 'Wann' })}
-      ${hist.length ? `<div style="height:24px"></div>${group(hist.slice(0, 8).map((x) => row({ title: esc(x.title), desc: esc(x.message), val: hm(minOfIso(x.ts)) })), { title: 'Zuletzt gesendet' })}` : ''}
+      ${hist.length ? `<div style="height:24px"></div>${group(hist.slice(0, 6).map((x) => row({ title: esc(x.title), desc: esc(x.message), val: hm(minOfIso(x.ts)) })), { title: 'Zuletzt gesendet' })}` : ''}
+      <div style="height:24px"></div>
+      <details class="more-opt"${n.ntfyTopic ? ' open' : ''}><summary class="overline gtitle" style="min-height:44px;display:flex;align-items:center;cursor:pointer">Alternative: App „ntfy“</summary>
+      ${group([
+        n.ntfyTopic ? `<div class="field"><span>Thema in ntfy abonnieren</span><div class="topic selectable">${esc(n.ntfyTopic)}</div></div>` : '',
+        n.ntfyTopic ? row({ title: 'Thema kopieren', tile: 'copy', action: 'copy-topic', chev: false }) : '',
+        row({ title: n.ntfyTopic ? 'Neues Thema erzeugen' : 'ntfy einrichten', tile: 'sparkles', tileCls: 'gray', action: 'new-topic', chev: false }),
+        n.ntfyTopic ? field('Eigener ntfy-Zugangsschlüssel (empfohlen)', `<input data-nf="ntfyToken" value="${esc(n.ntfyToken || '')}" placeholder="tk_…" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">`,
+          { hint: 'Ohne eigenen Zugang teilt sich der Server das Kontingent mit anderen (Fehler 429). Kostenlos: ntfy.sh → Konto anlegen → „Zugangs-Tokens“ → Token erstellen und hier einfügen.' }) : '',
+        n.ntfyTopic ? row({ title: 'ntfy nicht mehr nutzen', action: 'ntfy-off', chev: false, cls: 'danger' }) : '',
+      ].filter(Boolean))}</details>
+    </div>`;
+  },
+  fetch() {
+    const T = S.settings.traffic;
+    setDock('');
+    const act = S.activity;
+    if (!act) loadActivity();
+    const est = estimateCalls(T);
+    const max = Math.max(T.apiDailyLimit, ...(act?.days || []).map((d) => d.calls), 1);
+    const opt = (key, values, cur) => values.map(([v, l]) => `<option value="${v}" ${String(cur) === String(v) ? 'selected' : ''}>${l}</option>`).join('');
+    const KIND = { live: 'Live-Lage gemessen', 'forecast-today': 'Prognose heute aufgefrischt', 'forecast-tomorrow': 'Prognose für morgen geholt', limit: 'Tageslimit erreicht', 'notify-push': 'Mitteilung fehlgeschlagen', 'notify-ntfy': 'ntfy fehlgeschlagen' };
+    return `<div class="view">${back()}${ph('Datenabrufe')}
+      <p class="callout t-2" style="margin:-8px 0 20px">Hier siehst du, wann die App Verkehrsdaten bei TomTom abruft, und stellst ein, wie oft. Seltener spart Abfragen, häufiger macht die Empfehlung genauer.</p>
+      <div class="usage"><div class="usage-top"><b class="num">${S.ov.usage}</b><span>von ${T.apiDailyLimit} heute</span></div>
+        <div class="usage-bar"><i style="width:${Math.min(100, (S.ov.usage / T.apiDailyLimit) * 100)}%"></i></div>
+        <div class="usage-week" aria-label="Abfragen der letzten 7 Tage">${(act?.days || []).map((d) => `<div title="${d.day}: ${d.calls}"><i style="height:${Math.max(3, (d.calls / max) * 100)}%"></i><span>${WDS[wdOf(d.day)]}</span></div>`).join('')}</div>
+      </div>
+      <div class="note ${est > T.apiDailyLimit ? 'warn' : ''}" style="margin-top:16px">${icon(est > T.apiDailyLimit ? 'triangle-alert' : 'info')}<div class="grow callout">Mit diesen Einstellungen etwa <b>${est} Abfragen</b> an einem Arbeitstag${est > T.apiDailyLimit ? ` – mehr als dein Limit von ${T.apiDailyLimit}. Der Rest des Tages läuft dann nur mit gespeicherten Daten.` : '.'} Kostenlos sind 2.500 am Tag.</div></div>
+      <div style="height:24px"></div>
+      ${group([
+        `<div class="fgrid">${field('Messen ab', `<input type="time" data-tf="activeFrom" value="${esc(T.activeFrom)}">`)}${field('bis', `<input type="time" data-tf="activeTo" value="${esc(T.activeTo)}">`)}</div>`,
+        field('Kurz vor einer Fahrt (3 h vorher)', `<select data-tf="liveHotMin">${opt('liveHotMin', [[5, 'alle 5 min (genaueste)'], [10, 'alle 10 min'], [15, 'alle 15 min'], [30, 'alle 30 min']], T.liveHotMin)}</select>`),
+        field('Zum Lernen (sonst)', `<select data-tf="liveIdleMin">${opt('liveIdleMin', [[0, 'aus'], [15, 'alle 15 min'], [30, 'alle 30 min'], [60, 'stündlich']], T.liveIdleMin)}</select>`),
+        field('Am Wochenende lernen', `<select data-tf="learnWeekends">${opt('learnWeekends', [['false', 'nein'], ['true', 'ja']], T.learnWeekends)}</select>`),
+      ], { title: 'Live-Lage' })}
+      <div style="height:24px"></div>
+      ${group([
+        field('Prognose für heute auffrischen', `<select data-tf="forecastTodayMin">${opt('forecastTodayMin', [[0, 'aus'], [30, 'alle 30 min'], [60, 'stündlich'], [120, 'alle 2 h']], T.forecastTodayMin)}</select>`),
+        field('Prognose für morgen', `<select data-tf="tomorrowRuns">${opt('tomorrowRuns', [[0, 'aus'], [1, 'abends'], [2, 'mittags und abends']], T.tomorrowRuns)}</select>`),
+        field('Höchstens pro Tag', `<select data-tf="apiDailyLimit">${opt('apiDailyLimit', [[100, '100'], [300, '300'], [500, '500'], [1000, '1.000'], [2000, '2.000'], [2500, '2.500 (kostenlose Grenze)']], [100, 300, 500, 1000, 2000, 2500].includes(Number(T.apiDailyLimit)) ? T.apiDailyLimit : 2000)}</select>`),
+      ], { title: 'Prognosen & Limit', foot: 'Änderungen gelten ab dem nächsten Durchlauf (alle 5 Minuten).' })}
+      <h3 class="overline gtitle" style="margin-top:32px">Protokoll der letzten 3 Tage</h3>
+      ${!act ? '<div class="skel" style="height:160px;border-radius:14px"></div>'
+        : act.log.length ? `<div class="group">${act.log.slice(0, 60).map((x) => row({
+          title: esc(KIND[x.kind] || x.kind),
+          desc: x.note ? esc(x.note) : x.failed ? `${x.failed} fehlgeschlagen` : '',
+          val: `${fmtWhen(x.ts)}${x.calls ? ` · ${x.calls}×` : ''}`, valCls: x.failed || x.kind === 'limit' ? 'todo' : '',
+        })).join('')}</div>`
+        : '<p class="gfoot">Noch keine Abrufe protokolliert. Das Protokoll füllt sich mit dem nächsten Durchlauf.</p>'}
     </div>`;
   },
   prio() {
@@ -929,7 +1057,7 @@ const A = {
   retry() { S.error = null; S.loading = true; load(); },
   'close-sheet'() { closeSheet(); },
   back() { S.sub = null; render(); },
-  sub(b) { S.sub = b.dataset.sub; render(); },
+  sub(b) { S.sub = b.dataset.sub; if (['fetch', 'notify'].includes(S.sub)) S.activity = null; render(); },
   wizard() { openWizard(); },
   'status-sheet'() { openStatus(); },
   'override-today'() { openOverride(S.ov.today, 'Heute'); },
@@ -1028,7 +1156,7 @@ const A = {
   'reset-state'(b) { if (confirm('Status für heute zurücksetzen?')) return stateAction({ action: 'reset' }, 'Zurückgesetzt', b); },
 
   'save-traffic'(b) {
-    saveSettings((s) => Object.assign(s.traffic, { tomtomKey: $('#f-key').value.trim(), provider: $('#f-prov').value, apiDailyLimit: num($('#f-limit').value, 50, 2500, 2000) }), 'Verkehrsdaten gespeichert', { button: b });
+    saveSettings((s) => Object.assign(s.traffic, { tomtomKey: $('#f-key').value.trim(), provider: $('#f-prov').value }), 'Verkehrsdaten gespeichert', { button: b });
   },
   geo(b) { return geocodeInto(b.dataset.k, $(`[data-geo-in="${b.dataset.k}"]`).value, b, true); },
   async 'p-search'(b) {
@@ -1057,6 +1185,9 @@ const A = {
     if (!confirm(`„${place(k)}“ löschen?${used ? '\n\nAchtung: Vorlesungen oder Termine nutzen diesen Ort noch.' : ''}`)) return;
     saveSettings((s) => { delete s.locations[k]; }, 'Ort gelöscht').then((ok) => ok && closeSheet());
   },
+  async 'push-on'(b) { if (await enablePush(b)) { if (sheetState && $('.steps', sheetState.sh)) drawWizard(); else rerenderKeepScroll(); } },
+  async 'push-off'(b) { if (confirm('Mitteilungen auf diesem Gerät ausschalten?')) { await disablePush(b); rerenderKeepScroll(); } },
+  'ntfy-off'() { if (confirm('ntfy nicht mehr nutzen? Mitteilungen direkt aufs Handy bleiben davon unberührt.')) saveSettings((s) => { s.notify.ntfyTopic = ''; s.notify.ntfyToken = ''; }, 'ntfy abgeschaltet'); },
   async 'new-topic'(b) {
     if (S.settings.notify.ntfyTopic && !confirm('Neues Thema erzeugen? Danach musst du es in ntfy neu abonnieren.')) return;
     const topic = `pendel-${uid()}${uid()}`;
@@ -1068,7 +1199,7 @@ const A = {
   },
   async 'test-push'(b) {
     b.classList.add('loading');
-    try { await api('/test-notification', { method: 'POST' }); toast('Gesendet – kam die Nachricht an?'); } catch (e) { toast(e.message, 'err'); }
+    try { await api('/test-notification', { method: 'POST' }); toast('Gesendet – kam die Nachricht an?'); } catch (e) { toast(e.message, 'err'); S.activity = null; }
     b.classList.remove('loading');
   },
   export() {
@@ -1173,6 +1304,17 @@ document.addEventListener('change', (e) => {
     if (!day.earliest || !day.latest || day.latest <= day.earliest) { toast('„Spätestens“ muss nach „frühestens“ liegen', 'err'); t.value = S.settings.work.days[d]?.[f] || ''; return; }
     S.settings.work.days[d] = day;
     saveSettings((s) => { s.work.days[d] = day; s.planReviewed = true; }, 'Gespeichert', { rerender: false }).then(() => rerenderKeepScroll());
+  } else if (t.dataset.tf) {
+    const f = t.dataset.tf;
+    let v = t.value;
+    if (t.type === 'time') { if (!v) return; }
+    else if (f === 'learnWeekends') v = v === 'true';
+    else v = Number(v);
+    const next = { ...S.settings.traffic, [f]: v };
+    if (next.activeTo <= next.activeFrom) { toast('„bis“ muss nach „ab“ liegen', 'err'); t.value = S.settings.traffic[f]; return; }
+    saveSettings((s) => { s.traffic[f] = v; }, 'Gespeichert', { rerender: false }).then(() => rerenderKeepScroll());
+  } else if (t.dataset.nf === 'ntfyToken') {
+    saveSettings((s) => { s.notify.ntfyToken = t.value.trim(); }, 'Zugangsschlüssel gespeichert', { rerender: false });
   } else if (t.dataset.nf) {
     const f = t.dataset.nf, v = t.type === 'time' ? t.value : Number(t.value);
     if (t.type === 'time' && !v) return;
@@ -1267,9 +1409,11 @@ addEventListener('online', () => { showOffline(); load({ quiet: true }); });
 addEventListener('offline', showOffline);
 showOffline();
 
-if ('serviceWorker' in navigator && location.protocol === 'https:') {
+if ('serviceWorker' in navigator && window.isSecureContext) {
   const had = !!navigator.serviceWorker.controller;
-  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((reg) => {
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(async (reg) => {
+    await refreshPushSub();
+    if (S.ov && S.tab === 'more') rerenderKeepScroll();
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
   }).catch(() => {});
   navigator.serviceWorker.addEventListener('controllerchange', () => { if (had) location.reload(); });

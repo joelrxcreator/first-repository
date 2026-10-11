@@ -44,6 +44,7 @@ export const DEFAULT_SETTINGS = {
   },
   notify: {
     ntfyTopic: '',
+    ntfyToken: '', // optional: eigener ntfy-Zugang, umgeht das geteilte Kontingent
     eveningTime: '20:00',
     leadMin: 15,
     changeThresholdMin: 5,
@@ -54,6 +55,13 @@ export const DEFAULT_SETTINGS = {
     provider: 'tomtom', // 'tomtom' (sobald ein Schlüssel eingetragen ist) oder 'demo'
     tomtomKey: '',
     apiDailyLimit: 2000,
+    activeFrom: '05:00', // nur in diesem Zeitraum wird gemessen
+    activeTo: '22:00',
+    liveHotMin: 5, // Live-Lage, wenn eine Fahrt in den nächsten 3 h ansteht
+    liveIdleMin: 15, // Messen zum Lernen (0 = aus)
+    learnWeekends: false,
+    forecastTodayMin: 60, // Prognose für heute auffrischen (0 = aus)
+    tomorrowRuns: 2, // Prognose für morgen: 2 = mittags + abends, 1 = nur abends, 0 = aus
   },
 };
 

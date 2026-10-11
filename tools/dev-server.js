@@ -21,7 +21,9 @@ const store = memoryStore({
     ],
   },
 });
-const app = createApp({ store, log: () => {} });
+// Push-Dienste/ntfy werden lokal nur simuliert
+const fakeFetch = async (url, init) => (/ntfy\.sh|push/.test(String(url)) ? { ok: true, status: 201, json: async () => ({}) } : fetch(url, init));
+const app = createApp({ store, log: () => {}, fetchImpl: fakeFetch, throttleMs: 0 });
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json', '.png': 'image/png' };
 const fakeNow = process.env.NOW ? new Date(process.env.NOW) : null;
 const now = () => fakeNow || new Date();
@@ -41,7 +43,11 @@ http.createServer(async (req, res) => {
         'POST /tick': () => app.tick(now()),
         'GET /plan': () => app.planFor(url.searchParams.get('date'), now()),
         'GET /geocode': async () => ({ lat: 50.9, lon: 7.0, address: `${url.searchParams.get('q')} (Demo)` }),
-        'POST /test-notification': async () => ({ ok: true }),
+        'POST /test-notification': () => app.testNotification(now()),
+        'GET /push/key': () => app.pushKey(),
+        'POST /push/subscribe': () => app.pushSubscribe(body, now()),
+        'POST /push/unsubscribe': () => app.pushUnsubscribe(body),
+        'GET /activity': () => app.activity(now()),
       }[`${req.method} ${path}`] || (() => { throw new Error('404'); }))();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify(out));

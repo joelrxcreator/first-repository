@@ -37,7 +37,7 @@ test('Ein Tag im Leben: Vorabend-Prognose, Update, Losfahr-Hinweis, Lernen', asy
   const store = memoryStore({
     settings: { locations: LOC, traffic: { provider: 'tomtom', tomtomKey: 'x' }, notify: { ntfyTopic: 'test-topic' } },
   });
-  const app = createApp({ store, fetchImpl: fakeFetch(log), log: () => {} });
+  const app = createApp({ store, fetchImpl: fakeFetch(log), log: () => {}, throttleMs: 0 });
 
   // Sonntagabend 20:05 → Prognose für Montag
   for (let m = 12 * 60; m <= 20 * 60 + 5; m += 5) {
@@ -99,4 +99,95 @@ test('Ohne ntfy-Thema wird nichts als verschickt markiert', async () => {
   const app2 = createApp({ store, log: () => {}, fetchImpl: async (u, init) => { sent.push(JSON.parse(init.body)); return { ok: true }; } });
   await app2.tick(zonedToUtc('2026-10-11', 20 * 60 + 10));
   assert.ok(sent.some((n) => n.title.startsWith('Morgen')), 'Vorabend-Nachricht kommt nach Einrichtung');
+});
+
+import crypto from 'node:crypto';
+import { b64u } from '../supabase/functions/pendel/webpush.js';
+
+// Gegenstück zur Verschlüsselung (wie im Browser), um echte Zustellung zu prüfen
+function decryptPush(body, ua, auth) {
+  const buf = Buffer.from(body);
+  const salt = buf.subarray(0, 16), idlen = buf[20], asPub = buf.subarray(21, 21 + idlen), ct = buf.subarray(21 + idlen);
+  const shared = ua.computeSecret(asPub);
+  const ikm = Buffer.from(crypto.hkdfSync('sha256', shared, auth, Buffer.concat([Buffer.from('WebPush: info\0'), ua.getPublicKey(), asPub]), 32));
+  const cek = Buffer.from(crypto.hkdfSync('sha256', ikm, salt, Buffer.from('Content-Encoding: aes128gcm\0'), 16));
+  const nonce = Buffer.from(crypto.hkdfSync('sha256', ikm, salt, Buffer.from('Content-Encoding: nonce\0'), 12));
+  const d = crypto.createDecipheriv('aes-128-gcm', cek, nonce);
+  d.setAuthTag(ct.subarray(ct.length - 16));
+  const pt = Buffer.concat([d.update(ct.subarray(0, ct.length - 16)), d.final()]);
+  return JSON.parse(pt.subarray(0, pt.lastIndexOf(2)).toString());
+}
+
+test('Direkte Push-Nachricht aufs Handy: verschlüsselt, signiert, abgelaufene Abos werden entfernt', async () => {
+  const store = memoryStore({ settings: { locations: LOC } });
+  const ua = crypto.createECDH('prime256v1'); ua.generateKeys();
+  const auth = crypto.randomBytes(16);
+  const got = [];
+  const fetchImpl = async (url, init) => {
+    if (url.includes('gone')) return { ok: false, status: 410 };
+    got.push({ url, headers: init.headers, msg: decryptPush(init.body, ua, auth) });
+    return { ok: true, status: 201 };
+  };
+  const app = createApp({ store, fetchImpl, log: () => {}, throttleMs: 0 });
+  const { publicKey } = await app.pushKey();
+  assert.equal(b64u.decode(publicKey).length, 65);
+  await app.pushSubscribe({ subscription: { endpoint: 'https://web.push.apple.com/ok', keys: { p256dh: b64u.encode(ua.getPublicKey()), auth: b64u.encode(auth) } } });
+  await app.pushSubscribe({ subscription: { endpoint: 'https://web.push.apple.com/gone', keys: { p256dh: b64u.encode(ua.getPublicKey()), auth: b64u.encode(auth) } } });
+  const r = await app.testNotification();
+  assert.equal(r.ok, true);
+  assert.equal(got.length, 1);
+  assert.equal(got[0].msg.title, 'Pendelpilot: Test');
+  assert.match(got[0].headers.Authorization, /^vapid t=.+, k=/);
+  assert.equal((await store.listPushSubs()).length, 1, 'abgelaufenes Abo entfernt');
+});
+
+test('ntfy 429: klare Meldung, nicht als verschickt markiert, im Protokoll sichtbar', async () => {
+  const store = memoryStore({ settings: { locations: LOC, notify: { ntfyTopic: 't' } } });
+  const fetchImpl = async () => ({ ok: false, status: 429 });
+  const app = createApp({ store, fetchImpl, log: () => {}, throttleMs: 0 });
+  await assert.rejects(app.testNotification(), /Kontingent erschöpft/);
+  await app.tick(zonedToUtc('2026-10-11', 20 * 60 + 5));
+  assert.equal(store.db.sent.length, 0);
+  assert.ok(store.db.fetchLog.some((x) => x.kind === 'notify-ntfy' && /429/.test(x.note)));
+  // mit eigenem Zugang wird der Schlüssel mitgeschickt
+  let authHeader = null;
+  await store.saveSettings({ ...(await store.getSettings()), notify: { ntfyTopic: 't', ntfyToken: 'tk_abc' } });
+  const app2 = createApp({ store, fetchImpl: async (u, i) => { authHeader = i.headers.Authorization; return { ok: true, status: 200 }; }, log: () => {} });
+  await app2.testNotification();
+  assert.equal(authHeader, 'Bearer tk_abc');
+});
+
+test('Abruf-Häufigkeit ist einstellbar und wird protokolliert; Tempo-Bremse wirkt', async () => {
+  const log = [];
+  const mk = (traffic, throttleMs = 0) => {
+    const store = memoryStore({ settings: { locations: LOC, traffic: { provider: 'tomtom', tomtomKey: 'x', ...traffic } } });
+    return { store, app: createApp({ store, fetchImpl: fakeFetch(log), log: () => {}, throttleMs }) };
+  };
+  // Montag 10:00–12:00, keine Fahrt in Sicht → nur Lern-Messungen
+  const run = async (app, step = 5) => { for (let m = 600; m < 720; m += step) { log.now = zonedToUtc('2026-10-12', m); await app.tick(log.now); } };
+  const a = mk({ liveIdleMin: 30, forecastTodayMin: 0, tomorrowRuns: 0 });
+  await run(a.app);
+  const liveA = a.store.db.obs.filter((o) => o.source === 'live').length;
+  const b = mk({ liveIdleMin: 0, forecastTodayMin: 0, tomorrowRuns: 0 });
+  await run(b.app);
+  const liveB = b.store.db.obs.filter((o) => o.source === 'live').length;
+  assert.ok(liveA >= 4 && liveA <= 10, `alle 30 min: ${liveA}`);
+  assert.ok(liveB <= liveA / 2, `Lernen aus: ${liveB}`);
+  assert.ok(a.store.db.fetchLog.some((x) => x.kind === 'live' && x.calls > 0));
+  const act = await a.app.activity(log.now);
+  assert.equal(act.days.length, 7);
+  assert.ok(act.log.length > 0);
+  // Tageslimit wird eingehalten und vermerkt
+  const c = mk({ apiDailyLimit: 3, liveIdleMin: 5, forecastTodayMin: 60, tomorrowRuns: 2 });
+  await run(c.app);
+  assert.ok((await c.store.getUsage('2026-10-12')) <= 3);
+  assert.ok(c.store.db.fetchLog.some((x) => x.kind === 'limit'));
+  // Bremse: mehrere Abrufe in einem Takt liegen ≥ 200 ms auseinander
+  const times = [];
+  const d = memoryStore({ settings: { locations: LOC, traffic: { provider: 'tomtom', tomtomKey: 'x', tomorrowRuns: 1 } } });
+  const appD = createApp({ store: d, log: () => {}, throttleMs: 200, fetchImpl: async (url, init) => { times.push(Date.now()); return fakeFetch(log)(url, init); } });
+  log.now = zonedToUtc('2026-10-11', 19 * 60 + 30);
+  await appD.tick(log.now);
+  assert.ok(times.length >= 3);
+  for (let i = 1; i < times.length; i++) assert.ok(times[i] - times[i - 1] >= 190, `Abstand ${times[i] - times[i - 1]} ms`);
 });

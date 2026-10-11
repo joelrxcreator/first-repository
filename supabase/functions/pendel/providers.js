@@ -42,13 +42,15 @@ export async function tomtomGeocode(key, query, fetchImpl = fetch) {
   return { lat: hit.position.lat, lon: hit.position.lon, address: hit.address?.freeformAddress || query };
 }
 
-export async function sendNtfy(topic, { title, message, priority = 3, click }, fetchImpl = fetch) {
+export async function sendNtfy(topic, { title, message, priority = 3, click }, fetchImpl = fetch, token = '') {
   if (!topic) return false;
   const r = await fetchImpl('https://ntfy.sh/', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     body: JSON.stringify({ topic, title, message, priority, tags: ['car'], ...(click ? { click } : {}) }),
   });
+  if (r.status === 429) throw new Error('ntfy: Kontingent erschöpft (429)' + (token ? '' : ' – geteilter Server, eigener ntfy-Zugang hilft'));
+  if (r.status === 401 || r.status === 403) throw new Error('ntfy: Zugangsschlüssel ungültig');
   if (!r.ok) throw new Error(`ntfy ${r.status}`);
   return true;
 }

@@ -2,7 +2,7 @@
 import { zonedToUtc, addDays } from './core/time.js';
 
 export function memoryStore(initial = {}) {
-  const db = { settings: initial.settings || null, obs: [], plans: new Map(), state: new Map(), sent: [], usage: new Map() };
+  const db = { settings: initial.settings || null, obs: [], plans: new Map(), state: new Map(), sent: [], usage: new Map(), vapid: null, subs: new Map(), fetchLog: [] };
   return {
     db,
     async getSettings() { return db.settings; },
@@ -36,5 +36,12 @@ export function memoryStore(initial = {}) {
     async addSent(rec) { db.sent.push(rec); },
     async getUsage(day) { return db.usage.get(day) || 0; },
     async addUsage(day, n) { db.usage.set(day, (db.usage.get(day) || 0) + n); },
+    async getVapid() { return db.vapid; },
+    async saveVapid(v) { db.vapid = v; },
+    async listPushSubs() { return [...db.subs.values()]; },
+    async addPushSub(sub) { db.subs.set(sub.endpoint, sub); },
+    async deletePushSub(endpoint) { db.subs.delete(endpoint); },
+    async addFetchLog(row) { db.fetchLog.push(row); },
+    async getFetchLog(sinceIso) { return db.fetchLog.filter((r) => r.ts >= sinceIso).sort((a, b) => (a.ts < b.ts ? 1 : -1)).slice(0, 200); },
   };
 }

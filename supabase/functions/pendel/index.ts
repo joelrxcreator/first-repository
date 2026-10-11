@@ -46,6 +46,10 @@ Deno.serve(async (req) => {
       case 'GET /stats': return json(await app.stats());
       case 'GET /geocode': return json(await app.geocode(url.searchParams.get('q') || ''));
       case 'POST /test-notification': return json(await app.testNotification());
+      case 'GET /push/key': return json(await app.pushKey());
+      case 'POST /push/subscribe': return json(await app.pushSubscribe(body));
+      case 'POST /push/unsubscribe': return json(await app.pushUnsubscribe(body));
+      case 'GET /activity': return json(await app.activity());
       default: return json({ error: `Unbekannt: ${req.method} ${path}` }, 404);
     }
   } catch (e) {

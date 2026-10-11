@@ -509,3 +509,19 @@ body.sheet-open { overflow: hidden; }
 @media (min-width: 700px) {
   .tabbar { padding-left: max(env(safe-area-inset-left), calc((100vw - 640px) / 2)); padding-right: max(env(safe-area-inset-right), calc((100vw - 640px) / 2)); }
 }
+
+/* --- Datenabrufe --- */
+.usage { padding: var(--s4); border-radius: var(--r-m); background: var(--surface); }
+.usage-top { display: flex; align-items: baseline; gap: var(--s2); }
+.usage-top b { font-family: var(--font-num); font-size: 2.3rem; line-height: 1; font-weight: 700; letter-spacing: -.03em; }
+.usage-top span { color: var(--text-2); font-size: var(--t-callout); }
+.usage-bar { height: 6px; border-radius: 3px; background: var(--fill); margin-top: var(--s3); overflow: hidden; }
+.usage-bar i { display: block; height: 100%; border-radius: 3px; background: var(--primary); }
+.usage-week { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; height: 72px; margin-top: var(--s4); }
+.usage-week div { display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 4px; min-width: 0; }
+.usage-week i { width: 100%; max-width: 28px; border-radius: 4px 4px 2px 2px; background: var(--primary-tint); border-top: 2px solid var(--primary); }
+.usage-week div:last-child i { background: var(--primary); }
+.usage-week span { font-size: var(--t-overline); font-weight: 600; color: var(--text-3); }
+.more-opt > summary::-webkit-details-marker { display: none; }
+.more-opt > summary::after { content: "›"; margin-left: 6px; font-size: 1.2em; transition: transform var(--d-fast); }
+.more-opt[open] > summary::after { transform: rotate(90deg); }

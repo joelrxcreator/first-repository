@@ -34,8 +34,10 @@ Prognose-Abweichung. Am Tag selbst korrigiert die gemessene aktuelle Lage die n�
 1. **Verkehrsdaten:** kostenlosen Schlüssel bei [developer.tomtom.com](https://developer.tomtom.com/user/register)
    holen (keine Kreditkarte) und in der App unter *Einstellungen → Verkehrsdaten* einfügen.
 2. **Orte:** unter *Einstellungen → Orte* Zuhause, Arbeit, Uni eintragen und „Suchen“ tippen.
-3. **Benachrichtigungen:** App **ntfy** installieren, in der Pendelplaner-App „Neu erzeugen“ tippen,
-   dasselbe Thema in ntfy abonnieren, „Test senden“.
+3. **Benachrichtigungen:** In der App (vom Home-Bildschirm geöffnet) unter *Mehr → Benachrichtigungen*
+   „Mitteilungen erlauben“ tippen. Die Nachrichten kommen direkt aufs Handy (Web Push, ab iOS 16.4).
+   Alternativ geht die App **ntfy** – dann am besten mit eigenem ntfy-Zugangsschlüssel, sonst teilt sich
+   der Server das kostenlose Kontingent mit anderen (Fehler 429).
 4. **Plan:** Arbeitszeiten pro Wochentag, Stundenplan und Termine unter *Plan* eintragen.
 5. App auf dem Handy **zum Home-Bildschirm hinzufügen** (Safari: Teilen → „Zum Home-Bildschirm“).
 
@@ -59,4 +61,5 @@ tools/dev-server.js         lokaler Testserver im Demo-Modus
 - Lokal ausprobieren: `npm run dev` und den ausgegebenen Link öffnen.
 - Zugang: Die App spricht nur mit der Edge Function; die prüft einen geheimen Schlüssel
   (Tabelle `app_secret`). Alle Tabellen sind per Row Level Security gesperrt.
-- Verbrauch: ca. 300–700 TomTom-Abfragen pro Tag (Limit einstellbar, kostenlos bis 2.500).
+- Verbrauch: einstellbar unter *Mehr → Datenabrufe* (Häufigkeit, Zeitraum, Tageslimit, Protokoll); kostenlos bis 2.500 TomTom-Abfragen/Tag. Zwischen zwei Abfragen liegen mind. 260 ms (TomTom-Ratenlimit).
+- Push: `webpush.js` (VAPID + aes128gcm nur mit WebCrypto, keine Zusatzpakete).

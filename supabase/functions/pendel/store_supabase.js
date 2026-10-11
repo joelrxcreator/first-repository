@@ -76,5 +76,27 @@ export function supabaseStore(sb) {
     async addUsage(day, n) {
       must(await sb.rpc('add_api_usage', { p_day: day, p_calls: n }));
     },
+    async getVapid() {
+      const r = must(await sb.from('app_secret').select('vapid_public,vapid_private').eq('id', 1).maybeSingle());
+      return r?.vapid_public ? { publicKey: r.vapid_public, privateJwk: r.vapid_private } : null;
+    },
+    async saveVapid(v) {
+      must(await sb.from('app_secret').update({ vapid_public: v.publicKey, vapid_private: v.privateJwk }).eq('id', 1));
+    },
+    async listPushSubs() {
+      return must(await sb.from('push_subscriptions').select('endpoint,keys,label'));
+    },
+    async addPushSub(sub) {
+      must(await sb.from('push_subscriptions').upsert({ endpoint: sub.endpoint, keys: sub.keys, label: sub.label, created_at: sub.created }));
+    },
+    async deletePushSub(endpoint) {
+      must(await sb.from('push_subscriptions').delete().eq('endpoint', endpoint));
+    },
+    async addFetchLog(row) {
+      must(await sb.from('fetch_log').insert(row));
+    },
+    async getFetchLog(sinceIso) {
+      return must(await sb.from('fetch_log').select('ts,kind,calls,failed,note').gte('ts', sinceIso).order('ts', { ascending: false }).limit(200));
+    },
   };
 }
