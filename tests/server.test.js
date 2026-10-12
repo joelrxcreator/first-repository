@@ -208,3 +208,27 @@ test('Sofort aktualisieren: holt Prognosen für den Tag, höchstens alle 3 Minut
   assert.ok(act.log.some((x) => x.kind === 'refresh'));
   await assert.rejects(app.refreshNow('2020-01-01', now));
 });
+
+test('Angenommene Abfahrt korrigieren: „noch zu Hause“ hakt den Tag nicht ab, App nimmt nicht sofort wieder etwas an', async () => {
+  const store = memoryStore({ settings: { locations: LOC, overrides: { '2026-10-12': { work: { hours: 4, earliest: '05:30', latest: '22:00' } } } } });
+  const app = createApp({ store, log: () => {}, throttleMs: 0 });
+  // Plan von 05:00, danach Takt nach der geplanten Abfahrt → App nimmt Abfahrt an
+  await app.tick(zonedToUtc('2026-10-12', 300));
+  const dep = (await store.getPlan('2026-10-12', 'live')).scenarios[0].legs[0].depart;
+  await app.tick(zonedToUtc('2026-10-12', dep + 1));
+  let st = await store.getState('2026-10-12');
+  assert.equal(st.assumed, true);
+  // So wie heute früh: „Ich bin (wieder) zu Hause“ kurz danach → Arbeit darf NICHT als erledigt gelten
+  st = await app.setState({ action: 'arrived', location: 'home' }, zonedToUtc('2026-10-12', dep + 10));
+  assert.ok(!st.workDone, 'Arbeit fälschlich als erledigt markiert');
+  let plan = await app.planFor('2026-10-12', zonedToUtc('2026-10-12', dep + 10));
+  assert.ok(plan.scenarios[0].legs.length >= 2, 'Tag hat wieder Fahrten');
+  // „Noch zu Hause“ + eigene Abfahrt 06:20 → Plan fährt um 06:20
+  await app.setState({ action: 'notYet' }, zonedToUtc('2026-10-12', dep + 11));
+  await app.tick(zonedToUtc('2026-10-12', dep + 12));
+  st = await store.getState('2026-10-12');
+  assert.ok(!st.assumed && st.location === 'home', 'App hat wieder eine Abfahrt angenommen');
+  await app.saveSettings({ ...(await app.settings()), overrides: { '2026-10-12': { work: { hours: 4, earliest: '05:50', latest: '22:00' }, departAt: '06:20' } } });
+  plan = await app.planFor('2026-10-12', zonedToUtc('2026-10-12', dep + 13));
+  assert.equal(plan.scenarios[0].legs[0].depart, 380);
+});

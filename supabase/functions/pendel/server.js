@@ -212,6 +212,8 @@ export function createApp({ store, fetchImpl = fetch, log = console.log, appUrl 
     if (leg.depart > lp.minutes) return false;
     const st = (await store.getState(lp.dateStr)) || {};
     if (st.departedAt != null && st.departedAt >= leg.depart) return false;
+    // Hat man der App nach dieser Abfahrtszeit selbst gesagt, wo man ist, gilt das – nichts mehr annehmen
+    if (st.confirmedAt != null && leg.depart <= st.confirmedAt) return false;
     const next = applyDeparture(st, prevToday, leg.depart);
     if (!next) return false;
     await store.saveState(lp.dateStr, { ...next, assumed: true });
@@ -309,7 +311,13 @@ export function createApp({ store, fetchImpl = fetch, log = console.log, appUrl 
     const date = lp.dateStr;
     const at = body.at != null ? parseHM(body.at) : Math.round(lp.minutes);
     const st = (await store.getState(date)) || {};
-    if (body.action === 'reset') { await store.saveState(date, null); return {}; }
+    const nowM = Math.round(lp.minutes);
+    // Zurücksetzen / „noch zu Hause“: frischer Tag ab jetzt, ohne dass die App gleich wieder eine Abfahrt annimmt
+    if (body.action === 'reset' || body.action === 'notYet') {
+      const fresh = body.action === 'notYet' ? { location: 'home', availableFrom: at, confirmedAt: nowM } : { confirmedAt: nowM };
+      await store.saveState(date, fresh);
+      return fresh;
+    }
     const plan = await computeDay(await settings(), date, now);
     if (body.action === 'departed') {
       const next = applyDeparture(st, plan, at) || { ...st, departedAt: at, departFrom: st.location || 'home' };
@@ -327,10 +335,15 @@ export function createApp({ store, fetchImpl = fetch, log = console.log, appUrl 
       const workLoc = plan.day?.work?.location;
       Object.assign(st, { location: to, availableFrom: at, departedAt: null, assumed: false });
       if (to === workLoc && (st.workStart == null || st.workStartEstimated)) { st.workStart = at; st.workStartEstimated = false; }
-      if (to === 'home' && st.workStart != null) st.workDone = true;
+      if (to === 'home' && !st.workDone && st.workStart != null) {
+        // Nur geschätzter Arbeitsbeginn und kaum Zeit vergangen → man war gar nicht dort
+        if (!st.workStartEstimated || at - st.workStart >= 60) st.workDone = true;
+        else { delete st.workStart; delete st.workStartEstimated; }
+      }
     } else if (body.action === 'workStart') {
       st.workStart = at; st.location = st.location || 'work'; st.assumed = false;
     }
+    st.confirmedAt = nowM;
     await store.saveState(date, st);
     return st;
   }

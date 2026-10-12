@@ -653,6 +653,10 @@ function viewToday() {
       <button type="button" class="btn plain" data-a="status-sheet">Stimmt nicht?</button>
     </div>`;
 
+  if (st.assumed && st.departedAt != null) {
+    h += `<div class="note" style="margin-top:16px">${icon('info')}<div class="grow callout">Die App nimmt an, dass du um <b>${hm(st.departedAt)}</b> losgefahren bist.
+      <button type="button" class="btn tinted" data-a="not-yet">${icon('house')}Ich bin noch zu Hause</button></div></div>`;
+  }
   if (plan.warnings?.length) h += `<div class="notes" style="margin-top:16px">${plan.warnings.map((w) => `<div class="note warn">${icon('triangle-alert')}<div class="grow">${esc(w)}</div></div>`).join('')}</div>`;
 
   const next = best?.legs?.find((l) => l.depart >= nowMin - 5);
@@ -679,6 +683,9 @@ function viewToday() {
   } else {
     h += `<section class="board done"><p class="eyebrow">Heute</p><p class="time">Keine Fahrten mehr</p>
       <div class="facts"><span>Schönen Feierabend!</span></div></section>`;
+    if (Object.keys(st).some((k) => !['confirmedAt'].includes(k)) && (S.ov.todayPlan.day?.work || S.ov.todayPlan.day?.events?.length)) {
+      h += `<button type="button" class="btn plain block" style="margin-top:8px" data-a="not-yet">Stimmt nicht – ich bin noch gar nicht losgefahren</button>`;
+    }
     dock = `<button type="button" class="btn tinted lg block" data-a="tab" data-tab="tomorrow">${icon('calendar')}Morgen ansehen</button>`;
   }
 
@@ -687,6 +694,7 @@ function viewToday() {
 
   if (best?.legs?.length) {
     h += `<section class="section"><div class="section-h"><h2>Dein Tag</h2><span class="caption t-3">${dur(best.totals.commute)} Fahrt</span></div>${journey(best, plan, nowMin)}</section>`;
+    if (next && !transit && next.from === 'home') h += departPicker(plan, 'today');
     if (next && !transit) {
       const curve = plan.curves?.[`${next.from}>${next.to}`];
       h += `<section class="section why"><div class="section-h"><h2>Warum ${hm(next.depart)}?</h2></div><p>${whySentence(next)}</p>${spark(curve, next, nowMin)}</section>`;
@@ -799,13 +807,14 @@ function travelAt(curve, m) {
   }
   return p[p.length - 1][1];
 }
-function departPicker(plan) {
+function departPicker(plan, day = 'tomorrow') {
   const leg = firstHomeLeg(plan);
   if (!leg) return '';
+  const label = day === 'today' ? 'heute' : 'morgen';
   const fx = plan.fixedDepart;
   const best = plan.scenarios[0];
   const cur = fx?.feasible ? fx.at : leg.depart;
-  return `<section class="section depart-pick" data-date="${plan.date}" data-to="${esc(leg.to)}">
+  return `<section class="section depart-pick" data-date="${plan.date}" data-to="${esc(leg.to)}" data-day="${day}">
     <div class="section-h"><h2>Wann willst du los?</h2>${fx?.feasible ? chip('festgelegt', 'blue') : ''}</div>
     ${fx?.feasible && best.freeText ? `<p class="callout t-2" style="margin:0 0 12px">${esc(best.freeText)}.</p>` : ''}
     <div class="pick">
@@ -813,7 +822,7 @@ function departPicker(plan) {
       <div class="pick-out" id="dp-out" aria-live="polite"></div>
     </div>
     <div class="pick-actions">
-      <button type="button" class="btn primary block" data-a="set-depart" id="dp-set">${icon('check')}Für morgen festlegen</button>
+      <button type="button" class="btn primary block" data-a="set-depart" id="dp-set">${icon('check')}Für ${label} festlegen</button>
       ${fx ? `<button type="button" class="btn plain block" data-a="clear-depart">Vorgabe aufheben – die App wählt wieder</button>` : ''}
     </div>
   </section>`;
@@ -821,9 +830,15 @@ function departPicker(plan) {
 function drawDepartPreview() {
   const box = $('.depart-pick'), out = $('#dp-out'), inp = $('#dp-time');
   if (!box || !out || !inp) return;
-  const plan = S.ov.tomorrowPlan;
+  const today = box.dataset.day === 'today';
+  const plan = today ? S.ov.todayPlan : S.ov.tomorrowPlan;
   const to = box.dataset.to;
   const m = parseHM(inp.value);
+  if (today && m != null && m < S.ov.nowMin) {
+    $('#dp-set').disabled = true;
+    out.innerHTML = '<span class="t-3 callout">Diese Uhrzeit ist schon vorbei</span>';
+    return;
+  }
   const curve = plan.curves?.[`home>${to}`];
   const best = firstHomeLeg(plan);
   const v = m == null ? null : travelAt(curve, m);
@@ -1238,10 +1253,13 @@ function openOverride(date, label) {
 function openStatus() {
   const st = S.ov.todayPlan.state || {};
   const locs = Object.keys(S.settings.locations);
+  const away = (st.location && st.location !== 'home') || st.departedAt != null;
   openSheet({
     title: 'Wo bist du gerade?',
     body: `<p class="lead">Die App geht davon aus, dass du dich an die Empfehlung hältst. Wenn nicht, sag es ihr – dann plant sie ab hier neu.</p>
-      ${group(locs.map((k) => row({ title: k === 'home' ? 'Ich bin zu Hause' : `Ich bin bei ${esc(place(k))}`, tile: k === 'home' ? 'house' : 'map-pin', tileCls: k === 'home' ? '' : 'red', action: 'arrived', data: `data-loc="${esc(k)}"`, val: st.location === k && st.departedAt == null ? 'aktuell' : '', valCls: 'ok', chev: false })), { icons: true, title: 'Angekommen' })}
+      ${group([row({ title: 'Ich bin noch zu Hause', desc: 'Noch nicht losgefahren – Tag ab jetzt neu planen', tile: 'house', action: 'not-yet', chev: false })], { icons: true, title: 'Noch nicht los?' })}
+      <div style="height:20px"></div>
+      ${group(locs.filter((k) => k !== 'home' || away).map((k) => row({ desc: k === 'home' ? 'Unterwegs gewesen, jetzt zurück' : '', title: k === 'home' ? 'Ich bin wieder zu Hause' : `Ich bin bei ${esc(place(k))}`, tile: k === 'home' ? 'house' : 'map-pin', tileCls: k === 'home' ? '' : 'red', action: 'arrived', data: `data-loc="${esc(k)}"`, val: st.location === k && st.departedAt == null ? 'aktuell' : '', valCls: 'ok', chev: false })), { icons: true, title: 'Angekommen' })}
       <div style="height:20px"></div>
       ${group([row({ title: 'Ich bin gerade losgefahren', tile: 'car-front', action: 'departed', chev: false }), row({ title: 'Status für heute zurücksetzen', tile: 'rotate-cw', tileCls: 'gray', action: 'reset-state', chev: false })], { icons: true })}`,
   });
@@ -1401,6 +1419,7 @@ const A = {
 
   departed(b) { return stateAction({ action: 'departed' }, 'Gute Fahrt!', b); },
   arrived(b) { return stateAction({ action: 'arrived', ...(b.dataset.loc ? { location: b.dataset.loc } : {}) }, 'Ankunft gespeichert', b); },
+  'not-yet'(b) { return stateAction({ action: 'notYet' }, 'Alles klar – der Tag ist ab jetzt neu geplant', b); },
   'reset-state'(b) { if (confirm('Status für heute zurücksetzen?')) return stateAction({ action: 'reset' }, 'Zurückgesetzt', b); },
 
   'save-traffic'(b) {
